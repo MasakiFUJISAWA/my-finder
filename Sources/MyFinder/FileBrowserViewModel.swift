@@ -21,6 +21,8 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var sidebarSections: [SidebarSection] = []
     @Published var viewMode: BrowserViewMode = .list
     @Published private(set) var userFavoriteFolders: [URL] = []
+    @Published var isConnectServerDialogPresented = false
+    @Published var connectServerAddress = "smb://"
 
     private let fileManager = FileManager.default
     private let userFavoritesDefaultsKey = "MyFinder.userFavoriteFolders"
@@ -31,6 +33,34 @@ final class FileBrowserViewModel: ObservableObject {
     private enum TerminalApp {
         case terminal
         case iTerm
+    }
+
+    private enum ExternalEditor {
+        case webStorm
+        case pyCharm
+        case vsCode
+
+        var displayName: String {
+            switch self {
+            case .webStorm:
+                return "WebStorm"
+            case .pyCharm:
+                return "PyCharm"
+            case .vsCode:
+                return "VSCode"
+            }
+        }
+
+        var bundleIdentifiers: [String] {
+            switch self {
+            case .webStorm:
+                return ["com.jetbrains.WebStorm"]
+            case .pyCharm:
+                return ["com.jetbrains.pycharm", "com.jetbrains.pycharm.ce"]
+            case .vsCode:
+                return ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"]
+            }
+        }
     }
 
     private var iTermApplicationURL: URL? {
@@ -67,8 +97,30 @@ final class FileBrowserViewModel: ObservableObject {
         selectedItems.map(\.url)
     }
 
+    var selectedFolderURL: URL? {
+        guard selectedIDs.count == 1,
+              let item = selectedItems.first,
+              item.canNavigateInto else {
+            return nil
+        }
+
+        return item.url
+    }
+
     var isITermAvailable: Bool {
         iTermApplicationURL != nil
+    }
+
+    var canOpenSelectedFolderInWebStorm: Bool {
+        canOpenSelectedFolder(in: .webStorm)
+    }
+
+    var canOpenSelectedFolderInPyCharm: Bool {
+        canOpenSelectedFolder(in: .pyCharm)
+    }
+
+    var canOpenSelectedFolderInVSCode: Bool {
+        canOpenSelectedFolder(in: .vsCode)
     }
 
     var isTextInputActive: Bool {
@@ -76,11 +128,7 @@ final class FileBrowserViewModel: ObservableObject {
             return false
         }
 
-        if let textView = firstResponder as? NSTextView {
-            return textView.isEditable && textView.isFieldEditor
-        }
-
-        return firstResponder is NSTextField
+        return firstResponder.isEditableTextInputResponder
     }
 
     var canCutOrCopySelection: Bool {
@@ -603,16 +651,36 @@ final class FileBrowserViewModel: ObservableObject {
         openDirectory(url, in: .iTerm)
     }
 
+    func openSelectedFolderInWebStorm() {
+        openSelectedFolder(in: .webStorm)
+    }
+
+    func openSelectedFolderInPyCharm() {
+        openSelectedFolder(in: .pyCharm)
+    }
+
+    func openSelectedFolderInVSCode() {
+        openSelectedFolder(in: .vsCode)
+    }
+
     func refreshSidebarLocations() {
         sidebarSections = Self.makeSidebarSections(userFavoriteFolders: userFavoriteFolders)
     }
 
     func promptConnectToServer() {
-        guard let address = ConnectServerDialog().run() else {
-            return
-        }
+        connectServerAddress = "smb://"
+        isConnectServerDialogPresented = true
+    }
+
+    func commitConnectServerDialog() {
+        let address = connectServerAddress
+        isConnectServerDialogPresented = false
 
         connectToServer(address)
+    }
+
+    func cancelConnectServerDialog() {
+        isConnectServerDialogPresented = false
     }
 
     func connectToServer(_ address: String) {
@@ -1263,6 +1331,49 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func openSelectedFolder(in editor: ExternalEditor) {
+        guard let folderURL = selectedFolderURL else {
+            presentMessage("Select one folder to open in \(editor.displayName).")
+            return
+        }
+
+        guard let applicationURL = applicationURL(for: editor) else {
+            presentMessage("\(editor.displayName) is not installed.")
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+
+        NSWorkspace.shared.open(
+            [folderURL],
+            withApplicationAt: applicationURL,
+            configuration: configuration
+        ) { [weak self] _, error in
+            guard let error else {
+                return
+            }
+
+            Task { @MainActor in
+                self?.presentError(error, action: "Open in \(editor.displayName)")
+            }
+        }
+    }
+
+    private func canOpenSelectedFolder(in editor: ExternalEditor) -> Bool {
+        selectedFolderURL != nil && applicationURL(for: editor) != nil
+    }
+
+    private func applicationURL(for editor: ExternalEditor) -> URL? {
+        for bundleIdentifier in editor.bundleIdentifiers {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
     private func directoryURL(for url: URL) -> URL {
         var isDirectory: ObjCBool = false
 
@@ -1305,6 +1416,28 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func presentMessage(_ message: String) {
         errorMessage = message
+    }
+}
+
+private extension NSResponder {
+    var isEditableTextInputResponder: Bool {
+        var current: NSResponder? = self
+        var depth = 0
+
+        while let responder = current, depth < 16 {
+            if let textView = responder as? NSTextView, textView.isEditable {
+                return true
+            }
+
+            if let textField = responder as? NSTextField, textField.isEditable {
+                return true
+            }
+
+            current = responder.nextResponder
+            depth += 1
+        }
+
+        return false
     }
 }
 

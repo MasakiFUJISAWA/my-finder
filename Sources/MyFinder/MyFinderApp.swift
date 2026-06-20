@@ -6,8 +6,14 @@ struct MyFinderApp: App {
     @StateObject private var browser = FileBrowserViewModel()
 
     init() {
+        NSApplication.shared.setActivationPolicy(.regular)
+
         if let iconImage = AppIconLoader.load() {
             NSApplication.shared.applicationIconImage = iconImage
+        }
+
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
     }
 

@@ -42,6 +42,10 @@ struct ContentView: View {
         .onDisappear {
             removePasteboardShortcutMonitor()
         }
+        .sheet(isPresented: $browser.isConnectServerDialogPresented) {
+            ConnectServerSheet()
+                .environmentObject(browser)
+        }
         .sheet(item: $browser.renameRequest) { request in
             RenameSheet(
                 request: request,
@@ -350,11 +354,17 @@ struct BrowserToolbarView: View {
                 browser.reload()
             }
 
-            AddressPathField(text: $browser.addressText) {
-                browser.submitAddress()
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 24)
+            TextField("Path", text: $browser.addressText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: NSFont.systemFontSize, design: .monospaced))
+                .lineLimit(1)
+                .onSubmit {
+                    browser.submitAddress()
+                }
+                .help("Path")
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .layoutPriority(1)
 
             Button {
                 browser.submitAddress()
@@ -375,64 +385,6 @@ struct BrowserToolbarView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-    }
-}
-
-struct AddressPathField: NSViewRepresentable {
-    @Binding var text: String
-
-    let onSubmit: () -> Void
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = ShortcutFriendlyTextField()
-        field.isEditable = true
-        field.isSelectable = true
-        field.usesSingleLineMode = true
-        field.lineBreakMode = .byTruncatingMiddle
-        field.bezelStyle = .roundedBezel
-        field.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        field.delegate = context.coordinator
-        field.target = context.coordinator
-        field.action = #selector(Coordinator.submit)
-        field.focusRingType = .default
-        return field
-    }
-
-    func updateNSView(_ field: NSTextField, context: Context) {
-        context.coordinator.parent = self
-
-        guard field.currentEditor() == nil, field.stringValue != text else {
-            return
-        }
-
-        field.stringValue = text
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: AddressPathField
-
-        init(parent: AddressPathField) {
-            self.parent = parent
-        }
-
-        @MainActor
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else {
-                return
-            }
-
-            parent.text = field.stringValue
-        }
-
-        @MainActor
-        @objc func submit(_ sender: NSTextField) {
-            parent.text = sender.stringValue
-            parent.onSubmit()
-        }
     }
 }
 
@@ -541,6 +493,24 @@ struct FileActionBarView: View {
                 browser.openIniTerm(browser.currentURL)
             }
             .disabled(!browser.isITermAvailable)
+
+            Divider()
+                .frame(height: 22)
+
+            ToolbarIconButton(systemImageName: "globe", help: "Open selected folder in WebStorm") {
+                browser.openSelectedFolderInWebStorm()
+            }
+            .disabled(!browser.canOpenSelectedFolderInWebStorm)
+
+            ToolbarIconButton(systemImageName: "hammer", help: "Open selected folder in PyCharm") {
+                browser.openSelectedFolderInPyCharm()
+            }
+            .disabled(!browser.canOpenSelectedFolderInPyCharm)
+
+            ToolbarIconButton(systemImageName: "chevron.left.forwardslash.chevron.right", help: "Open selected folder in VSCode") {
+                browser.openSelectedFolderInVSCode()
+            }
+            .disabled(!browser.canOpenSelectedFolderInVSCode)
 
             Spacer()
         }
@@ -895,6 +865,53 @@ struct FolderContextMenu: View {
 
         Button("Reveal in Finder") {
             browser.revealInFinder(browser.currentURL)
+        }
+    }
+}
+
+struct ConnectServerSheet: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+    @FocusState private var isAddressFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Connect Server")
+                    .font(.headline)
+
+                Text("Enter an SMB address.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            TextField("smb://server/share", text: $browser.connectServerAddress)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: NSFont.systemFontSize, design: .monospaced))
+                .focused($isAddressFocused)
+                .onSubmit {
+                    browser.commitConnectServerDialog()
+                }
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    browser.cancelConnectServerDialog()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Connect") {
+                    browser.commitConnectServerDialog()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .onAppear {
+            DispatchQueue.main.async {
+                isAddressFocused = true
+            }
         }
     }
 }
