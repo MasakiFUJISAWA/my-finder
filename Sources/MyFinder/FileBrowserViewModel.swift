@@ -77,7 +77,7 @@ final class FileBrowserViewModel: ObservableObject {
         for component in currentURL.pathComponents {
             if component == "/" {
                 path = "/"
-                result.append(Breadcrumb(title: "Mac", url: URL(fileURLWithPath: "/", isDirectory: true)))
+                result.append(Breadcrumb(title: Self.rootVolumeTitle(), url: URL(fileURLWithPath: "/", isDirectory: true)))
             } else {
                 path = (path as NSString).appendingPathComponent(component)
                 result.append(Breadcrumb(title: component, url: URL(fileURLWithPath: path, isDirectory: true)))
@@ -235,6 +235,23 @@ final class FileBrowserViewModel: ObservableObject {
         } else {
             selectedIDs = [url]
         }
+    }
+
+    func dragProvider(for item: FileItem) -> NSItemProvider {
+        select(item)
+
+        let provider = NSItemProvider(object: item.url as NSURL)
+        let fileURLString = item.url.absoluteString
+        provider.suggestedName = item.displayName
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.fileURL.identifier,
+            visibility: .all
+        ) { completion in
+            completion(fileURLString.data(using: .utf8), nil)
+            return nil
+        }
+
+        return provider
     }
 
     func sort(by column: FileSortColumn) {
@@ -444,10 +461,17 @@ final class FileBrowserViewModel: ObservableObject {
 
     func addFavoriteFolders(from providers: [NSItemProvider]) -> Bool {
         var acceptedDrop = false
+        let supportedTypeIdentifiers = [UTType.fileURL.identifier, UTType.url.identifier]
 
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+        for provider in providers {
+            guard let typeIdentifier = supportedTypeIdentifiers.first(where: {
+                provider.hasItemConformingToTypeIdentifier($0)
+            }) else {
+                continue
+            }
+
             acceptedDrop = true
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, error in
+            provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { [weak self] item, error in
                 let path = Self.filePath(fromDroppedItem: item)
                 let errorMessage = error?.localizedDescription
 
@@ -481,6 +505,29 @@ final class FileBrowserViewModel: ObservableObject {
 
     func refreshSidebarLocations() {
         sidebarSections = Self.makeSidebarSections(userFavoriteFolders: userFavoriteFolders)
+    }
+
+    func promptConnectToServer() {
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
+        input.placeholderString = "smb://server/share"
+        input.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+
+        let alert = NSAlert()
+        alert.messageText = "Connect Server"
+        alert.informativeText = "Enter an SMB address. You can type smb://server/share or server/share."
+        alert.alertStyle = .informational
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = input
+
+        let response = alert.runModal()
+
+        guard response == .alertFirstButtonReturn else {
+            return
+        }
+
+        connectToServer(input.stringValue)
     }
 
     func connectToServer(_ address: String) {
@@ -538,11 +585,7 @@ final class FileBrowserViewModel: ObservableObject {
 
         let favorites = deduplicatedPreservingOrder(defaultFavorites + customFavorites)
 
-        let locations = deduplicatedLocations(
-            cloudStorageLocations(homeURL: homeURL)
-                + mountedVolumeLocations()
-                + [SidebarLocation(title: "Mac", systemImageName: "internaldrive", url: URL(fileURLWithPath: "/", isDirectory: true))]
-        )
+        let locations = finderStyleLocations(homeURL: homeURL)
 
         return [
             SidebarSection(title: "Favorites", locations: favorites),
@@ -562,6 +605,35 @@ final class FileBrowserViewModel: ObservableObject {
         ]
     }
 
+    private static func finderStyleLocations(homeURL: URL) -> [SidebarLocation] {
+        deduplicatedPreservingOrder(
+            computerLocations()
+                + mountedVolumeLocations()
+                + cloudStorageLocations(homeURL: homeURL)
+        )
+    }
+
+    private static func computerLocations() -> [SidebarLocation] {
+        let volumesURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: volumesURL.path) else {
+            return []
+        }
+
+        let title = Host.current().localizedName?
+            .replacingOccurrences(of: ".local", with: "")
+            .nilIfEmpty
+            ?? "This Mac"
+
+        return [
+            SidebarLocation(
+                title: title,
+                systemImageName: "desktopcomputer",
+                url: volumesURL
+            )
+        ]
+    }
+
     private static func cloudStorageLocations(homeURL: URL) -> [SidebarLocation] {
         let fileManager = FileManager.default
         var urls: [URL] = []
@@ -575,7 +647,12 @@ final class FileBrowserViewModel: ObservableObject {
             includingPropertiesForKeys: [.isDirectoryKey, .localizedNameKey],
             options: [.skipsHiddenFiles]
         ) {
-            urls.append(contentsOf: cloudStorageContents.filter { isDirectory($0, fileManager: fileManager) })
+            urls.append(
+                contentsOf: cloudStorageContents.filter { url in
+                    isDirectory(url, fileManager: fileManager)
+                        && shouldShowCloudStorageLocation(url)
+                }
+            )
         }
 
         if let homeContents = try? fileManager.contentsOfDirectory(
@@ -587,18 +664,29 @@ final class FileBrowserViewModel: ObservableObject {
                 contentsOf: homeContents.filter { url in
                     let name = url.lastPathComponent.lowercased()
                     return isDirectory(url, fileManager: fileManager)
+                        && shouldShowCloudStorageLocation(url)
                         && (name.hasPrefix("google drive") || name.hasPrefix("googledrive") || name.hasPrefix("onedrive"))
                 }
             )
         }
 
-        return deduplicatedLocations(urls.map { url in
+        return deduplicatedPreservingOrder(urls.map { url in
             SidebarLocation(
                 title: cloudStorageTitle(for: url),
                 systemImageName: cloudStorageIconName(for: url),
                 url: url
             )
         })
+        .sorted { left, right in
+            let leftRank = cloudStorageSortRank(left.url)
+            let rightRank = cloudStorageSortRank(right.url)
+
+            if leftRank != rightRank {
+                return leftRank < rightRank
+            }
+
+            return left.title.localizedStandardCompare(right.title) == .orderedAscending
+        }
     }
 
     private static func mountedVolumeLocations() -> [SidebarLocation] {
@@ -615,12 +703,11 @@ final class FileBrowserViewModel: ObservableObject {
         ) ?? []
 
         let locations = volumeURLs.compactMap { url -> SidebarLocation? in
-            guard url.path != "/" else {
-                return nil
-            }
-
             let values = try? url.resourceValues(forKeys: Set(keys))
-            let title = values?.volumeName ?? FileManager.default.displayName(atPath: url.path)
+            let title = values?.volumeName
+                ?? FileManager.default.displayName(atPath: url.path)
+                .nilIfEmpty
+                ?? url.lastPathComponent
             let isLocal = values?.volumeIsLocal ?? true
             let isInternal = values?.volumeIsInternal ?? false
             let isRemovable = values?.volumeIsRemovable ?? false
@@ -639,7 +726,17 @@ final class FileBrowserViewModel: ObservableObject {
             return SidebarLocation(title: title, systemImageName: iconName, url: url)
         }
 
-        return deduplicatedLocations(locations)
+        return deduplicatedPreservingOrder(locations)
+            .sorted { left, right in
+                let leftRank = volumeSortRank(left.url)
+                let rightRank = volumeSortRank(right.url)
+
+                if leftRank != rightRank {
+                    return leftRank < rightRank
+                }
+
+                return left.title.localizedStandardCompare(right.title) == .orderedAscending
+            }
     }
 
     private static func cloudStorageTitle(for url: URL) -> String {
@@ -647,36 +744,55 @@ final class FileBrowserViewModel: ObservableObject {
         let lowercasedName = rawName.lowercased()
 
         if lowercasedName.hasPrefix("googledrive") || lowercasedName.hasPrefix("google drive") {
-            return cleanedCloudName(rawName, provider: "Google Drive")
+            return cleanedCloudName(rawName, provider: "Google Drive", rawPrefixes: ["GoogleDrive", "Google Drive"])
+        }
+
+        if lowercasedName.hasPrefix("onedrive-共有ライブラリ")
+            || lowercasedName.hasPrefix("onedrive-共有ライブラリ") {
+            return cleanedCloudName(
+                rawName,
+                provider: "SharePoint",
+                rawPrefixes: ["OneDrive-共有ライブラリ", "OneDrive-共有ライブラリ"]
+            )
         }
 
         if lowercasedName.hasPrefix("onedrive") {
-            return cleanedCloudName(rawName, provider: "OneDrive")
+            return cleanedCloudName(rawName, provider: "OneDrive", rawPrefixes: ["OneDrive"])
         }
 
         if lowercasedName.contains("sharepoint") {
-            return cleanedCloudName(rawName, provider: "SharePoint")
+            return cleanedCloudName(rawName, provider: "SharePoint", rawPrefixes: ["SharePoint"])
         }
 
-        return rawName.replacingOccurrences(of: "-", with: " ")
+        return FileManager.default.displayName(atPath: url.path)
     }
 
-    private static func cleanedCloudName(_ rawName: String, provider: String) -> String {
+    private static func cleanedCloudName(
+        _ rawName: String,
+        provider: String,
+        rawPrefixes: [String]
+    ) -> String {
         let separators = ["-", " "]
 
-        for separator in separators {
-            let prefix = "\(provider.replacingOccurrences(of: " ", with: ""))\(separator)"
+        for rawPrefix in rawPrefixes {
+            for separator in separators {
+                let prefix = "\(rawPrefix)\(separator)"
 
-            if rawName.hasPrefix(prefix) {
-                return "\(provider) - \(rawName.dropFirst(prefix.count))"
+                if rawName.hasPrefix(prefix) {
+                    let suffix = rawName
+                        .dropFirst(prefix.count)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    return suffix.isEmpty ? provider : "\(provider) - \(suffix)"
+                }
             }
         }
 
-        if rawName == provider || rawName == provider.replacingOccurrences(of: " ", with: "") {
+        if rawPrefixes.contains(rawName) || rawName == provider {
             return provider
         }
 
-        return rawName.replacingOccurrences(of: "-", with: " ")
+        return rawName
     }
 
     private static func cloudStorageIconName(for url: URL) -> String {
@@ -691,6 +807,71 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         return "externaldrive.badge.icloud"
+    }
+
+    private static func shouldShowCloudStorageLocation(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+
+        return !name.contains("cloudtemp")
+            && !name.contains("tmp")
+            && !name.contains("temporary")
+            && !name.hasPrefix(".")
+    }
+
+    private static func rootVolumeTitle() -> String {
+        let rootURL = URL(fileURLWithPath: "/", isDirectory: true)
+        let values = try? rootURL.resourceValues(forKeys: [.volumeNameKey])
+
+        return values?.volumeName
+            ?? FileManager.default.displayName(atPath: "/")
+            .nilIfEmpty
+            ?? "Macintosh HD"
+    }
+
+    private static func volumeSortRank(_ url: URL) -> Int {
+        if url.path == "/" {
+            return 0
+        }
+
+        let values = try? url.resourceValues(forKeys: [
+            .volumeIsLocalKey,
+            .volumeIsInternalKey,
+            .volumeIsRemovableKey
+        ])
+
+        if values?.volumeIsLocal == false {
+            return 30
+        }
+
+        if values?.volumeIsRemovable == true {
+            return 20
+        }
+
+        if values?.volumeIsInternal == true {
+            return 10
+        }
+
+        return 40
+    }
+
+    private static func cloudStorageSortRank(_ url: URL) -> Int {
+        let name = url.lastPathComponent.lowercased()
+
+        if name.contains("google") {
+            return 100
+        }
+
+        if name.hasPrefix("onedrive-共有ライブラリ")
+            || name.hasPrefix("onedrive-共有ライブラリ")
+            || name.contains("sharepoint") {
+            return 120
+        }
+
+        if name.contains("onedrive") {
+            return 110
+        }
+
+        return 130
     }
 
     private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
@@ -1000,5 +1181,11 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func presentMessage(_ message: String) {
         errorMessage = message
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
     @State private var sidebarWidth: CGFloat = 300
+    @State private var pasteboardShortcutMonitor: Any?
 
     private let minimumSidebarWidth: CGFloat = 220
     private let maximumSidebarWidth: CGFloat = 560
@@ -35,6 +36,12 @@ struct ContentView: View {
             .frame(minWidth: 760, minHeight: 520)
         }
         .frame(minWidth: 980, minHeight: 580)
+        .onAppear {
+            installPasteboardShortcutMonitor()
+        }
+        .onDisappear {
+            removePasteboardShortcutMonitor()
+        }
         .sheet(item: $browser.renameRequest) { request in
             RenameSheet(
                 request: request,
@@ -63,6 +70,64 @@ struct ContentView: View {
         } message: {
             Text(browser.errorMessage ?? "")
         }
+    }
+
+    private func installPasteboardShortcutMonitor() {
+        guard pasteboardShortcutMonitor == nil else {
+            return
+        }
+
+        pasteboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard shouldHandlePasteboardShortcut(event) else {
+                return event
+            }
+
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "x":
+                browser.cutSelection()
+                return nil
+            case "c":
+                browser.copySelection()
+                return nil
+            case "v":
+                browser.pasteIntoCurrentFolder()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removePasteboardShortcutMonitor() {
+        if let pasteboardShortcutMonitor {
+            NSEvent.removeMonitor(pasteboardShortcutMonitor)
+            self.pasteboardShortcutMonitor = nil
+        }
+    }
+
+    private func shouldHandlePasteboardShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        guard flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.control),
+              !flags.contains(.shift) else {
+            return false
+        }
+
+        guard ["x", "c", "v"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "") else {
+            return false
+        }
+
+        return !isEditingText
+    }
+
+    private var isEditingText: Bool {
+        guard let firstResponder = NSApp.keyWindow?.firstResponder else {
+            return false
+        }
+
+        return firstResponder is NSTextView || firstResponder is NSTextField
     }
 }
 
@@ -126,7 +191,6 @@ struct SidebarResizeHandle: View {
 
 struct SidebarView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
-    @State private var isConnectServerPresented = false
     @State private var isFavoritesDropTargeted = false
 
     var body: some View {
@@ -141,7 +205,7 @@ struct SidebarView: View {
 
             Section("Network") {
                 Button {
-                    isConnectServerPresented = true
+                    browser.promptConnectToServer()
                 } label: {
                     Label("Connect Server...", systemImage: "network")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -153,24 +217,14 @@ struct SidebarView: View {
                 Button {
                     browser.refreshSidebarLocations()
                 } label: {
-                    Label("Refresh Locations", systemImage: "arrow.clockwise")
+                    Label("Reload Locations", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 3)
+                .help("Rescan cloud folders, mounted drives, and network volumes")
             }
-        }
-        .sheet(isPresented: $isConnectServerPresented) {
-            ConnectServerSheet(
-                onConnect: { address in
-                    browser.connectToServer(address)
-                    isConnectServerPresented = false
-                },
-                onCancel: {
-                    isConnectServerPresented = false
-                }
-            )
         }
     }
 }
@@ -183,27 +237,54 @@ struct SidebarLocationsSection: View {
     @Binding var isDropTargeted: Bool
 
     var body: some View {
-        if acceptsFavoriteDrops {
-            content
-                .onDrop(
-                    of: [UTType.fileURL.identifier],
-                    isTargeted: $isDropTargeted
-                ) { providers in
-                    browser.addFavoriteFolders(from: providers)
-                }
-        } else {
-            content
-        }
-    }
-
-    private var content: some View {
         Section {
             ForEach(section.locations) { location in
                 SidebarLocationRow(location: location)
+                    .modifier(
+                        FavoriteDropTargetModifier(
+                            isEnabled: acceptsFavoriteDrops,
+                            isTargeted: $isDropTargeted
+                        )
+                    )
             }
         } header: {
             Text(section.title)
                 .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .modifier(
+                    FavoriteDropTargetModifier(
+                        isEnabled: acceptsFavoriteDrops,
+                        isTargeted: $isDropTargeted
+                    )
+                )
+        }
+        .modifier(
+            FavoriteDropTargetModifier(
+                isEnabled: acceptsFavoriteDrops,
+                isTargeted: $isDropTargeted
+            )
+        )
+    }
+}
+
+struct FavoriteDropTargetModifier: ViewModifier {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let isEnabled: Bool
+    @Binding var isTargeted: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.onDrop(
+                of: [UTType.fileURL.identifier, UTType.url.identifier],
+                isTargeted: $isTargeted
+            ) { providers in
+                browser.addFavoriteFolders(from: providers)
+            }
+        } else {
+            content
         }
     }
 }
@@ -420,6 +501,9 @@ struct FileListView: View {
                                     browser.select(item)
                                     browser.open(item)
                                 })
+                                .onDrag {
+                                    browser.dragProvider(for: item)
+                                }
                         }
                     }
                     .listStyle(.plain)
@@ -456,6 +540,9 @@ struct FileIconGridView: View {
                             browser.select(item)
                             browser.open(item)
                         })
+                        .onDrag {
+                            browser.dragProvider(for: item)
+                        }
                 }
             }
             .padding(12)
@@ -821,48 +908,6 @@ struct RenameSheet: View {
         }
         .padding(18)
         .frame(width: 380)
-        .onAppear {
-            isFocused = true
-        }
-    }
-}
-
-struct ConnectServerSheet: View {
-    let onConnect: (String) -> Void
-    let onCancel: () -> Void
-
-    @State private var address = "smb://"
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Connect Server")
-                .font(.headline)
-
-            TextField("smb://server/share", text: $address)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .focused($isFocused)
-                .onSubmit {
-                    onConnect(address)
-                }
-
-            HStack {
-                Spacer()
-
-                Button("Cancel") {
-                    onCancel()
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Button("Connect") {
-                    onConnect(address)
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(18)
-        .frame(width: 420)
         .onAppear {
             isFocused = true
         }
