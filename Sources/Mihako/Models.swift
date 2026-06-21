@@ -37,8 +37,7 @@ enum MihakoTransferType {
     static let urlDropTypeIdentifiers = [
         sftpURL,
         UTType.fileURL.identifier,
-        UTType.url.identifier,
-        UTType.plainText.identifier
+        UTType.url.identifier
     ]
 }
 

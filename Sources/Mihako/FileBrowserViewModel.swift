@@ -554,18 +554,12 @@ final class FileBrowserViewModel: ObservableObject {
 
         provider.suggestedName = item.displayName
 
-        if !SFTPClient.isSFTPURL(item.url) {
-            provider.registerDataRepresentation(
-                forTypeIdentifier: UTType.fileURL.identifier,
-                visibility: .all
-            ) { completion in
-                completion(itemURLString.data(using: .utf8), nil)
-                return nil
-            }
+        guard !SFTPClient.isSFTPURL(item.url) else {
+            return provider
         }
 
         provider.registerDataRepresentation(
-            forTypeIdentifier: UTType.url.identifier,
+            forTypeIdentifier: UTType.fileURL.identifier,
             visibility: .all
         ) { completion in
             completion(itemURLString.data(using: .utf8), nil)
@@ -573,10 +567,10 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         provider.registerDataRepresentation(
-            forTypeIdentifier: UTType.plainText.identifier,
+            forTypeIdentifier: UTType.url.identifier,
             visibility: .all
         ) { completion in
-            completion((SFTPClient.isSFTPURL(item.url) ? itemURLString : item.url.path).data(using: .utf8), nil)
+            completion(itemURLString.data(using: .utf8), nil)
             return nil
         }
 
