@@ -9,34 +9,52 @@ struct ContentView: View {
     @State private var hostingWindow: NSWindow?
 
     private let minimumSidebarWidth: CGFloat = 220
-    private let maximumSidebarWidth: CGFloat = 560
+    private let preferredMaximumSidebarWidth: CGFloat = 560
+    private let resizeHandleWidth: CGFloat = 8
+    private let minimumFileBrowserWidth: CGFloat = 760
+    private let minimumFileBrowserHeight: CGFloat = 520
+    private let minimumWindowHeight: CGFloat = 580
+
+    private var minimumWindowWidth: CGFloat {
+        minimumSidebarWidth + resizeHandleWidth + minimumFileBrowserWidth
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            SidebarView()
-                .frame(width: sidebarWidth)
-                .frame(maxHeight: .infinity)
+        GeometryReader { proxy in
+            let availableWidth = max(proxy.size.width, minimumWindowWidth)
+            let availableHeight = max(proxy.size.height, minimumWindowHeight)
+            let maximumSidebarWidth = sidebarMaximumWidth(for: availableWidth)
+            let actualSidebarWidth = clampedSidebarWidth(maximumWidth: maximumSidebarWidth)
 
-            SidebarResizeHandle(
-                width: $sidebarWidth,
-                minimumWidth: minimumSidebarWidth,
-                maximumWidth: maximumSidebarWidth
-            )
+            HStack(spacing: 0) {
+                SidebarView()
+                    .frame(width: actualSidebarWidth, alignment: .leading)
+                    .frame(maxHeight: .infinity)
+                    .clipped()
 
-            VStack(spacing: 0) {
-                BrowserToolbarView()
-                Divider()
-                BreadcrumbBar()
-                Divider()
-                FileActionBarView()
-                Divider()
-                FileListView()
-                Divider()
-                StatusBarView()
+                SidebarResizeHandle(
+                    width: sidebarWidthBinding(maximumWidth: maximumSidebarWidth),
+                    minimumWidth: minimumSidebarWidth,
+                    maximumWidth: maximumSidebarWidth
+                )
+
+                VStack(spacing: 0) {
+                    BrowserToolbarView()
+                    Divider()
+                    BreadcrumbBar()
+                    Divider()
+                    FileActionBarView()
+                    Divider()
+                    FileListView()
+                    Divider()
+                    StatusBarView()
+                }
+                .frame(minWidth: minimumFileBrowserWidth, minHeight: minimumFileBrowserHeight)
+                .layoutPriority(1)
             }
-            .frame(minWidth: 760, minHeight: 520)
+            .frame(width: availableWidth, height: availableHeight, alignment: .leading)
         }
-        .frame(minWidth: 980, minHeight: 580)
+        .frame(minWidth: minimumWindowWidth, minHeight: minimumWindowHeight, alignment: .leading)
         .background {
             WindowReader(window: $hostingWindow)
         }
@@ -78,6 +96,26 @@ struct ContentView: View {
         } message: {
             Text(browser.errorMessage ?? "")
         }
+    }
+
+    private func sidebarMaximumWidth(for availableWidth: CGFloat) -> CGFloat {
+        let contentAwareMaximum = availableWidth - resizeHandleWidth - minimumFileBrowserWidth
+        return max(minimumSidebarWidth, min(preferredMaximumSidebarWidth, contentAwareMaximum))
+    }
+
+    private func clampedSidebarWidth(maximumWidth: CGFloat) -> CGFloat {
+        min(max(sidebarWidth, minimumSidebarWidth), maximumWidth)
+    }
+
+    private func sidebarWidthBinding(maximumWidth: CGFloat) -> Binding<CGFloat> {
+        Binding(
+            get: {
+                clampedSidebarWidth(maximumWidth: maximumWidth)
+            },
+            set: { newValue in
+                sidebarWidth = min(max(newValue, minimumSidebarWidth), maximumWidth)
+            }
+        )
     }
 
     private func installPasteboardShortcutMonitor() {
