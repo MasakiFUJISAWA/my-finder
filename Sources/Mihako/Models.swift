@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 enum FileSortColumn: String, CaseIterable {
     case name
@@ -28,6 +29,17 @@ struct RenameRequest: Identifiable {
     let id = UUID()
     let url: URL
     let currentName: String
+}
+
+enum MihakoTransferType {
+    static let sftpURL = "dev.masakifujisawa.mihako.sftp-url"
+
+    static let urlDropTypeIdentifiers = [
+        sftpURL,
+        UTType.fileURL.identifier,
+        UTType.url.identifier,
+        UTType.plainText.identifier
+    ]
 }
 
 enum RemoteConnectionKind: String, CaseIterable, Codable, Hashable, Identifiable {

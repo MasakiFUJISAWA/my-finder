@@ -540,7 +540,14 @@ final class FileBrowserViewModel: ObservableObject {
         let itemURLString = item.url.absoluteString
 
         if SFTPClient.isSFTPURL(item.url) {
-            provider = NSItemProvider(object: itemURLString as NSString)
+            provider = NSItemProvider()
+            provider.registerDataRepresentation(
+                forTypeIdentifier: MihakoTransferType.sftpURL,
+                visibility: .all
+            ) { completion in
+                completion(itemURLString.data(using: .utf8), nil)
+                return nil
+            }
         } else {
             provider = NSItemProvider(object: item.url as NSURL)
         }
@@ -578,14 +585,9 @@ final class FileBrowserViewModel: ObservableObject {
 
     func dropItems(from providers: [NSItemProvider], into destinationFolder: URL) -> Bool {
         var acceptedDrop = false
-        let supportedTypeIdentifiers = [
-            UTType.fileURL.identifier,
-            UTType.url.identifier,
-            UTType.plainText.identifier
-        ]
 
         for provider in providers {
-            guard let typeIdentifier = supportedTypeIdentifiers.first(where: {
+            guard let typeIdentifier = MihakoTransferType.urlDropTypeIdentifiers.first(where: {
                 provider.hasItemConformingToTypeIdentifier($0)
             }) else {
                 continue

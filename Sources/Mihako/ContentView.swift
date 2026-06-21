@@ -736,7 +736,7 @@ struct FileListView: View {
             browser.activateFilePane()
         }
         .onDrop(
-            of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+            of: MihakoTransferType.urlDropTypeIdentifiers,
             isTargeted: nil
         ) { providers in
             browser.dropItems(from: providers, into: browser.currentURL)
@@ -792,7 +792,7 @@ struct FileListRowContainer: View {
                 browser.dragProvider(for: item)
             }
             .onDrop(
-                of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+                of: MihakoTransferType.urlDropTypeIdentifiers,
                 isTargeted: nil
             ) { providers in
                 guard item.canNavigateInto else {
@@ -830,7 +830,7 @@ struct FileIconGridView: View {
                             browser.dragProvider(for: item)
                         }
                         .onDrop(
-                            of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.plainText.identifier],
+                            of: MihakoTransferType.urlDropTypeIdentifiers,
                             isTargeted: nil
                         ) { providers in
                             guard item.canNavigateInto else {
