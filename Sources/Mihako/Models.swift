@@ -143,17 +143,20 @@ struct SidebarLocation: Identifiable, Hashable {
 struct ServerConnection: Codable, Hashable {
     var kind: RemoteConnectionKind
     var urlString: String
+    var displayName: String?
     var mountPath: String?
     var isUnavailable: Bool
 
     init(
         kind: RemoteConnectionKind = .smb,
         urlString: String,
+        displayName: String? = nil,
         mountPath: String?,
         isUnavailable: Bool
     ) {
         self.kind = kind
         self.urlString = urlString
+        self.displayName = displayName
         self.mountPath = mountPath
         self.isUnavailable = isUnavailable
     }
@@ -161,6 +164,7 @@ struct ServerConnection: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case kind
         case urlString
+        case displayName
         case mountPath
         case isUnavailable
     }
@@ -169,6 +173,7 @@ struct ServerConnection: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         kind = try container.decodeIfPresent(RemoteConnectionKind.self, forKey: .kind) ?? .smb
         urlString = try container.decode(String.self, forKey: .urlString)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
         mountPath = try container.decodeIfPresent(String.self, forKey: .mountPath)
         isUnavailable = try container.decode(Bool.self, forKey: .isUnavailable)
     }

@@ -26,6 +26,7 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var isConnectServerDialogPresented = false
     @Published var connectProtocol: RemoteConnectionKind = .smb
     @Published var connectServerAddress = "smb://"
+    @Published var connectServerDisplayName = ""
 
     private let fileManager = FileManager.default
     private let userFavoritesDefaultsKey = "Mihako.userFavoriteFolders"
@@ -306,7 +307,8 @@ final class FileBrowserViewModel: ObservableObject {
     func open(_ location: SidebarLocation) {
         if location.isUnavailable, let connectionURL = location.connectionURL {
             let kind = remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb
-            mountServerConnection(kind: kind, url: connectionURL, silentFailure: true)
+            let displayName = serverConnection(kind: kind, url: connectionURL)?.displayName
+            mountServerConnection(kind: kind, url: connectionURL, displayName: displayName, silentFailure: true)
             return
         }
 
@@ -771,21 +773,23 @@ final class FileBrowserViewModel: ObservableObject {
     func promptConnectToServer() {
         connectProtocol = .smb
         connectServerAddress = connectProtocol.defaultAddress
+        connectServerDisplayName = ""
         isConnectServerDialogPresented = true
     }
 
     func commitConnectServerDialog() {
         let address = connectServerAddress
+        let displayName = connectServerDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         isConnectServerDialogPresented = false
 
-        connectToServer(kind: connectProtocol, address: address)
+        connectToServer(kind: connectProtocol, address: address, displayName: displayName)
     }
 
     func cancelConnectServerDialog() {
         isConnectServerDialogPresented = false
     }
 
-    func connectToServer(kind selectedKind: RemoteConnectionKind, address: String) {
+    func connectToServer(kind selectedKind: RemoteConnectionKind, address: String, displayName: String?) {
         let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedAddress.isEmpty else {
@@ -800,7 +804,7 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        mountServerConnection(kind: kind, url: url, silentFailure: false)
+        mountServerConnection(kind: kind, url: url, displayName: displayName, silentFailure: false)
     }
 
     func clearError() {
@@ -879,11 +883,11 @@ final class FileBrowserViewModel: ObservableObject {
             if let mountPath = connection.mountPath,
                FileManager.default.fileExists(atPath: mountPath) {
                 let mountURL = URL(fileURLWithPath: mountPath, isDirectory: true)
-                let title = FileManager.default.displayName(atPath: mountURL.path).nilIfEmpty
+                let fallbackTitle = FileManager.default.displayName(atPath: mountURL.path).nilIfEmpty
                     ?? mountURL.lastPathComponent
 
                 return SidebarLocation(
-                    title: remoteConnectionTitle(kind: kind, name: title, isUnavailable: false),
+                    title: remoteConnectionTitle(for: connection, fallbackName: fallbackTitle, isUnavailable: false),
                     systemImageName: kind.systemImageName,
                     url: mountURL,
                     connectionURL: connectionURL,
@@ -893,8 +897,8 @@ final class FileBrowserViewModel: ObservableObject {
 
             return SidebarLocation(
                 title: remoteConnectionTitle(
-                    kind: kind,
-                    name: serverConnectionTitle(for: connectionURL),
+                    for: connection,
+                    fallbackName: serverConnectionTitle(for: connectionURL),
                     isUnavailable: true
                 ),
                 systemImageName: "exclamationmark.triangle",
@@ -913,6 +917,27 @@ final class FileBrowserViewModel: ObservableObject {
     ) -> String {
         let suffix = isUnavailable ? " unavailable" : ""
         return "\(kind.displayName) - \(name)\(suffix)"
+    }
+
+    private static func remoteConnectionTitle(
+        for connection: ServerConnection,
+        fallbackName: String,
+        isUnavailable: Bool
+    ) -> String {
+        let trimmedDisplayName = connection.displayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+
+        guard let trimmedDisplayName else {
+            return remoteConnectionTitle(
+                kind: connection.kind,
+                name: fallbackName,
+                isUnavailable: isUnavailable
+            )
+        }
+
+        let suffix = isUnavailable ? " unavailable" : ""
+        return "\(trimmedDisplayName)\(suffix)"
     }
 
     private func normalizedRemoteAddress(
@@ -973,13 +998,19 @@ final class FileBrowserViewModel: ObservableObject {
                 continue
             }
 
-            mountServerConnection(kind: connection.kind, url: url, silentFailure: true)
+            mountServerConnection(
+                kind: connection.kind,
+                url: url,
+                displayName: connection.displayName,
+                silentFailure: true
+            )
         }
     }
 
     private func mountServerConnection(
         kind: RemoteConnectionKind,
         url: URL,
+        displayName: String?,
         silentFailure: Bool
     ) {
         let connectionID = serverConnectionID(kind: kind, urlString: url.absoluteString)
@@ -990,7 +1021,7 @@ final class FileBrowserViewModel: ObservableObject {
 
         guard kind.canMountThroughSystem else {
             reconnectingServerIDs.remove(connectionID)
-            upsertServerConnection(kind: kind, url: url, mountURL: nil, isUnavailable: true)
+            upsertServerConnection(kind: kind, url: url, displayName: displayName, mountURL: nil, isUnavailable: true)
             refreshSidebarLocations()
             return
         }
@@ -1000,7 +1031,13 @@ final class FileBrowserViewModel: ObservableObject {
             reconnectingServerIDs.remove(connectionID)
 
             if result.status == 0, let mountURL = result.mountURLs.first {
-                upsertServerConnection(kind: kind, url: url, mountURL: mountURL, isUnavailable: false)
+                upsertServerConnection(
+                    kind: kind,
+                    url: url,
+                    displayName: displayName,
+                    mountURL: mountURL,
+                    isUnavailable: false
+                )
                 refreshSidebarLocations()
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -1010,7 +1047,13 @@ final class FileBrowserViewModel: ObservableObject {
             }
 
             if hasServerConnection(kind: kind, url: url) {
-                upsertServerConnection(kind: kind, url: url, mountURL: nil, isUnavailable: true)
+                upsertServerConnection(
+                    kind: kind,
+                    url: url,
+                    displayName: displayName,
+                    mountURL: nil,
+                    isUnavailable: true
+                )
                 refreshSidebarLocations()
             }
 
@@ -1035,9 +1078,17 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func serverConnection(kind: RemoteConnectionKind, url: URL) -> ServerConnection? {
+        let id = serverConnectionID(kind: kind, urlString: url.absoluteString)
+        return serverConnections.first {
+            serverConnectionID(kind: $0.kind, urlString: $0.urlString) == id
+        }
+    }
+
     private func upsertServerConnection(
         kind: RemoteConnectionKind,
         url: URL,
+        displayName: String?,
         mountURL: URL?,
         isUnavailable: Bool
     ) {
@@ -1049,6 +1100,9 @@ final class FileBrowserViewModel: ObservableObject {
             serverConnectionID(kind: $0.kind, urlString: $0.urlString) == id
         }) {
             serverConnections[index].kind = kind
+            if let displayName {
+                serverConnections[index].displayName = displayName
+            }
             serverConnections[index].mountPath = mountPath
             serverConnections[index].isUnavailable = isUnavailable
         } else {
@@ -1056,6 +1110,7 @@ final class FileBrowserViewModel: ObservableObject {
                 ServerConnection(
                     kind: kind,
                     urlString: urlString,
+                    displayName: displayName,
                     mountPath: mountPath,
                     isUnavailable: isUnavailable
                 )

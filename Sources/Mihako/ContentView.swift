@@ -911,7 +911,12 @@ struct FolderContextMenu: View {
 
 struct ConnectServerSheet: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
-    @FocusState private var isAddressFocused: Bool
+    @FocusState private var focusedField: ConnectServerField?
+
+    private enum ConnectServerField {
+        case name
+        case address
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -934,10 +939,17 @@ struct ConnectServerSheet: View {
                 browser.connectServerAddress = newValue.defaultAddress
             }
 
+            TextField("Location name (optional)", text: $browser.connectServerDisplayName)
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .name)
+                .onSubmit {
+                    focusedField = .address
+                }
+
             TextField(browser.connectProtocol.placeholder, text: $browser.connectServerAddress)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: NSFont.systemFontSize, design: .monospaced))
-                .focused($isAddressFocused)
+                .focused($focusedField, equals: .address)
                 .onSubmit {
                     browser.commitConnectServerDialog()
                 }
@@ -960,7 +972,7 @@ struct ConnectServerSheet: View {
         .frame(width: 460)
         .onAppear {
             DispatchQueue.main.async {
-                isAddressFocused = true
+                focusedField = .address
             }
         }
     }
