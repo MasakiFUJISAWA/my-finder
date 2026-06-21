@@ -3,6 +3,7 @@ import Foundation
 struct S3ConnectionSpec: Sendable {
     let bucket: String
     let prefix: String
+    let profile: String?
 }
 
 enum S3ClientError: Error, LocalizedError {
@@ -20,6 +21,8 @@ enum S3ClientError: Error, LocalizedError {
 }
 
 enum S3Client {
+    private static let profileQueryName = "awsProfile"
+
     private struct ProcessResult: Sendable {
         let status: Int32
         let output: Data
@@ -72,8 +75,17 @@ enum S3Client {
         url.scheme?.lowercased() == "s3"
     }
 
+    static func availableProfiles() async throws -> [String] {
+        let result = try await runAWS(["configure", "list-profiles"])
+        return result.outputString
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     static func displayString(for url: URL) -> String {
-        url.absoluteString.removingPercentEncoding ?? url.absoluteString
+        let displayURL = urlByRemovingProfile(from: url)
+        return displayURL.absoluteString.removingPercentEncoding ?? displayURL.absoluteString
     }
 
     static func url(bySettingPrefix prefix: String, on url: URL) -> URL {
@@ -81,14 +93,25 @@ enum S3Client {
             return url
         }
 
-        return Self.url(bucket: bucket, prefix: prefix)
+        return Self.url(bucket: bucket, prefix: prefix, profile: profile(for: url))
     }
 
-    static func url(bucket: String, prefix: String) -> URL {
+    static func url(bySettingProfile profile: String?, on url: URL) -> URL {
+        guard let bucket = url.host(percentEncoded: false) else {
+            return url
+        }
+
+        return Self.url(bucket: bucket, prefix: prefix(for: url), profile: profile)
+    }
+
+    static func url(bucket: String, prefix: String, profile: String? = nil) -> URL {
         var components = URLComponents()
         components.scheme = "s3"
         components.host = bucket
         components.path = normalizedPath(for: prefix)
+        components.queryItems = profile
+            .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
+            .map { [URLQueryItem(name: profileQueryName, value: $0)] }
         return components.url ?? URL(string: "s3://\(bucket)/")!
     }
 
@@ -121,13 +144,22 @@ enum S3Client {
         return rawPath
     }
 
+    static func profile(for url: URL) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == profileQueryName }?
+            .value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+    }
+
     static func directoryPrefix(for url: URL) -> String {
         directoryPrefix(prefix(for: url))
     }
 
     static func resolvedDirectoryURL(for url: URL) throws -> URL {
         let spec = try connectionSpec(for: url)
-        return Self.url(bucket: spec.bucket, prefix: directoryPrefix(spec.prefix))
+        return Self.url(bucket: spec.bucket, prefix: directoryPrefix(spec.prefix), profile: spec.profile)
     }
 
     static func listDirectory(at url: URL, showHiddenFiles: Bool) async throws -> (url: URL, items: [FileItem]) {
@@ -153,7 +185,7 @@ enum S3Client {
                 arguments.append(contentsOf: ["--continuation-token", continuationToken])
             }
 
-            let result = try await runAWS(arguments)
+            let result = try await runAWS(arguments, profile: spec.profile)
             let response = try JSONDecoder().decode(ListResponse.self, from: result.output)
 
             for commonPrefix in response.commonPrefixes ?? [] {
@@ -167,7 +199,7 @@ enum S3Client {
 
                 items.append(
                     FileItem(
-                        url: Self.url(bucket: spec.bucket, prefix: commonPrefix.prefix),
+                        url: Self.url(bucket: spec.bucket, prefix: commonPrefix.prefix, profile: spec.profile),
                         name: name,
                         isDirectory: true,
                         isPackage: false,
@@ -196,7 +228,7 @@ enum S3Client {
 
                 items.append(
                     FileItem(
-                        url: Self.url(bucket: spec.bucket, prefix: object.key),
+                        url: Self.url(bucket: spec.bucket, prefix: object.key, profile: spec.profile),
                         name: name,
                         isDirectory: isDirectory,
                         isPackage: false,
@@ -221,6 +253,8 @@ enum S3Client {
             return
         }
 
+        let spec = try connectionSpec(for: remoteDirectoryURL)
+
         for localURL in localURLs {
             let isDirectory = isLocalDirectory(localURL)
             let destinationURL = childURL(
@@ -234,7 +268,7 @@ enum S3Client {
                 arguments.append("--recursive")
             }
 
-            _ = try await runAWS(arguments)
+            _ = try await runAWS(arguments, profile: spec.profile)
         }
     }
 
@@ -249,6 +283,7 @@ enum S3Client {
         )
 
         for remoteURL in remoteURLs {
+            let spec = try connectionSpec(for: remoteURL)
             let isDirectory = isDirectoryURL(remoteURL)
             let destinationURL = localDirectoryURL.appendingPathComponent(displayName(for: remoteURL))
             var arguments = ["s3", "cp", uri(for: remoteURL), destinationURL.path]
@@ -257,7 +292,7 @@ enum S3Client {
                 arguments.append("--recursive")
             }
 
-            _ = try await runAWS(arguments)
+            _ = try await runAWS(arguments, profile: spec.profile)
         }
     }
 
@@ -268,7 +303,7 @@ enum S3Client {
             "--bucket", spec.bucket,
             "--key", directoryPrefix(spec.prefix),
             "--body", "/dev/null"
-        ])
+        ], profile: spec.profile)
     }
 
     static func createFile(at url: URL) async throws {
@@ -278,7 +313,7 @@ enum S3Client {
             "--bucket", spec.bucket,
             "--key", spec.prefix,
             "--body", "/dev/null"
-        ])
+        ], profile: spec.profile)
     }
 
     static func rename(from sourceURL: URL, to destinationURL: URL) async throws {
@@ -291,6 +326,7 @@ enum S3Client {
     }
 
     static func copy(from sourceURL: URL, to destinationURL: URL) async throws {
+        let spec = try connectionSpec(for: sourceURL)
         var arguments = ["s3", "cp", uri(for: sourceURL), uri(for: destinationURL)]
 
         if isDirectoryURL(sourceURL) {
@@ -298,18 +334,19 @@ enum S3Client {
             arguments.append("--recursive")
         }
 
-        _ = try await runAWS(arguments)
+        _ = try await runAWS(arguments, profile: spec.profile)
     }
 
     static func remove(_ urls: [URL]) async throws {
         for url in urls {
+            let spec = try connectionSpec(for: url)
             var arguments = ["s3", "rm", uri(for: url)]
 
             if isDirectoryURL(url) {
                 arguments.append("--recursive")
             }
 
-            _ = try await runAWS(arguments)
+            _ = try await runAWS(arguments, profile: spec.profile)
         }
     }
 
@@ -318,12 +355,13 @@ enum S3Client {
             throw S3ClientError.invalidURL(url)
         }
 
-        return S3ConnectionSpec(bucket: bucket, prefix: prefix(for: url))
+        return S3ConnectionSpec(bucket: bucket, prefix: prefix(for: url), profile: profile(for: url))
     }
 
-    private static func runAWS(_ arguments: [String]) async throws -> ProcessResult {
+    private static func runAWS(_ arguments: [String], profile: String? = nil) async throws -> ProcessResult {
         let command = awsCommand()
-        return try await run(command.executable, arguments: command.arguments + arguments)
+        let profileArguments = profile.map { ["--profile", $0] } ?? []
+        return try await run(command.executable, arguments: command.arguments + profileArguments + arguments)
     }
 
     private static func run(_ executable: String, arguments: [String]) async throws -> ProcessResult {
@@ -383,6 +421,17 @@ enum S3Client {
 
         let prefix = prefix(for: url)
         return prefix.isEmpty ? "s3://\(bucket)" : "s3://\(bucket)/\(prefix)"
+    }
+
+    private static func urlByRemovingProfile(from url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems else {
+            return url
+        }
+
+        let visibleQueryItems = queryItems.filter { $0.name != profileQueryName }
+        components.queryItems = visibleQueryItems.isEmpty ? nil : visibleQueryItems
+        return components.url ?? url
     }
 
     private static func displayName(for url: URL) -> String {

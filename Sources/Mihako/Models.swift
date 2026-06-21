@@ -157,6 +157,7 @@ struct ServerConnection: Codable, Hashable {
     var kind: RemoteConnectionKind
     var urlString: String
     var displayName: String?
+    var awsProfile: String?
     var mountPath: String?
     var isUnavailable: Bool
 
@@ -164,12 +165,14 @@ struct ServerConnection: Codable, Hashable {
         kind: RemoteConnectionKind = .smb,
         urlString: String,
         displayName: String? = nil,
+        awsProfile: String? = nil,
         mountPath: String?,
         isUnavailable: Bool
     ) {
         self.kind = kind
         self.urlString = urlString
         self.displayName = displayName
+        self.awsProfile = awsProfile
         self.mountPath = mountPath
         self.isUnavailable = isUnavailable
     }
@@ -178,6 +181,7 @@ struct ServerConnection: Codable, Hashable {
         case kind
         case urlString
         case displayName
+        case awsProfile
         case mountPath
         case isUnavailable
     }
@@ -187,6 +191,7 @@ struct ServerConnection: Codable, Hashable {
         kind = try container.decodeIfPresent(RemoteConnectionKind.self, forKey: .kind) ?? .smb
         urlString = try container.decode(String.self, forKey: .urlString)
         displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        awsProfile = try container.decodeIfPresent(String.self, forKey: .awsProfile)
         mountPath = try container.decodeIfPresent(String.self, forKey: .mountPath)
         isUnavailable = try container.decode(Bool.self, forKey: .isUnavailable)
     }

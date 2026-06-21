@@ -27,6 +27,8 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var connectProtocol: RemoteConnectionKind = .smb
     @Published var connectServerAddress = "smb://"
     @Published var connectServerDisplayName = ""
+    @Published var connectAWSProfile = ""
+    @Published private(set) var awsProfiles: [String] = []
 
     private let fileManager = FileManager.default
     private let userFavoritesDefaultsKey = "Mihako.userFavoriteFolders"
@@ -614,8 +616,14 @@ final class FileBrowserViewModel: ObservableObject {
     func open(_ location: SidebarLocation) {
         if location.isUnavailable, let connectionURL = location.connectionURL {
             let kind = remoteConnectionKind(for: connectionURL.absoluteString) ?? .smb
-            let displayName = serverConnection(kind: kind, url: connectionURL)?.displayName
-            mountServerConnection(kind: kind, url: connectionURL, displayName: displayName, silentFailure: true)
+            let connection = serverConnection(kind: kind, url: connectionURL)
+            mountServerConnection(
+                kind: kind,
+                url: connectionURL,
+                displayName: connection?.displayName,
+                awsProfile: connection?.awsProfile,
+                silentFailure: true
+            )
             return
         }
 
@@ -1523,15 +1531,19 @@ final class FileBrowserViewModel: ObservableObject {
         connectProtocol = .smb
         connectServerAddress = connectProtocol.defaultAddress
         connectServerDisplayName = ""
+        connectAWSProfile = ""
         isConnectServerDialogPresented = true
     }
 
     func commitConnectServerDialog() {
         let address = connectServerAddress
         let displayName = connectServerDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let awsProfile = connectProtocol == .s3
+            ? connectAWSProfile.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            : nil
         isConnectServerDialogPresented = false
 
-        connectToServer(kind: connectProtocol, address: address, displayName: displayName)
+        connectToServer(kind: connectProtocol, address: address, displayName: displayName, awsProfile: awsProfile)
     }
 
     func cancelConnectServerDialog() {
@@ -1574,7 +1586,33 @@ final class FileBrowserViewModel: ObservableObject {
         persistSidebarLocationOrder(nextIDs)
     }
 
-    func connectToServer(kind selectedKind: RemoteConnectionKind, address: String, displayName: String?) {
+    func refreshAWSProfiles() {
+        Task {
+            do {
+                let profiles = try await S3Client.availableProfiles()
+
+                await MainActor.run {
+                    self.awsProfiles = profiles
+
+                    if !self.connectAWSProfile.isEmpty,
+                       !profiles.contains(self.connectAWSProfile) {
+                        self.connectAWSProfile = ""
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.awsProfiles = []
+                }
+            }
+        }
+    }
+
+    func connectToServer(
+        kind selectedKind: RemoteConnectionKind,
+        address: String,
+        displayName: String?,
+        awsProfile: String? = nil
+    ) {
         let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedAddress.isEmpty else {
@@ -1589,7 +1627,15 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        mountServerConnection(kind: kind, url: url, displayName: displayName, silentFailure: false)
+        let profile = kind == .s3 ? awsProfile : nil
+
+        mountServerConnection(
+            kind: kind,
+            url: url,
+            displayName: displayName,
+            awsProfile: profile,
+            silentFailure: false
+        )
     }
 
     func clearError() {
@@ -1807,6 +1853,7 @@ final class FileBrowserViewModel: ObservableObject {
                 kind: connection.kind,
                 url: url,
                 displayName: connection.displayName,
+                awsProfile: connection.awsProfile,
                 silentFailure: true
             )
         }
@@ -1816,19 +1863,30 @@ final class FileBrowserViewModel: ObservableObject {
         kind: RemoteConnectionKind,
         url: URL,
         displayName: String?,
+        awsProfile: String? = nil,
         silentFailure: Bool
     ) {
+        let connectionURL = kind == .s3
+            ? S3Client.url(bySettingProfile: awsProfile ?? S3Client.profile(for: url), on: url)
+            : url
+
         if kind == .sftp {
-            connectSFTPServer(url: url, displayName: displayName, silentFailure: silentFailure)
+            connectSFTPServer(url: connectionURL, displayName: displayName, silentFailure: silentFailure)
             return
         }
 
         if kind == .s3 {
-            connectS3Server(url: url, displayName: displayName, silentFailure: silentFailure)
+            connectS3Server(
+                url: connectionURL,
+                replacing: url,
+                displayName: displayName,
+                awsProfile: awsProfile ?? S3Client.profile(for: connectionURL),
+                silentFailure: silentFailure
+            )
             return
         }
 
-        let connectionID = serverConnectionID(kind: kind, urlString: url.absoluteString)
+        let connectionID = serverConnectionID(kind: kind, urlString: connectionURL.absoluteString)
 
         guard reconnectingServerIDs.insert(connectionID).inserted else {
             return
@@ -1836,7 +1894,13 @@ final class FileBrowserViewModel: ObservableObject {
 
         guard kind.canMountThroughSystem else {
             reconnectingServerIDs.remove(connectionID)
-            upsertServerConnection(kind: kind, url: url, displayName: displayName, mountURL: nil, isUnavailable: true)
+            upsertServerConnection(
+                kind: kind,
+                url: connectionURL,
+                displayName: displayName,
+                mountURL: nil,
+                isUnavailable: true
+            )
             refreshSidebarLocations()
             return
         }
@@ -1848,7 +1912,7 @@ final class FileBrowserViewModel: ObservableObject {
             if result.status == 0, let mountURL = result.mountURLs.first {
                 upsertServerConnection(
                     kind: kind,
-                    url: url,
+                    url: connectionURL,
                     displayName: displayName,
                     mountURL: mountURL,
                     isUnavailable: false
@@ -1861,10 +1925,10 @@ final class FileBrowserViewModel: ObservableObject {
                 return
             }
 
-            if hasServerConnection(kind: kind, url: url) {
+            if hasServerConnection(kind: kind, url: connectionURL) {
                 upsertServerConnection(
                     kind: kind,
-                    url: url,
+                    url: connectionURL,
                     displayName: displayName,
                     mountURL: nil,
                     isUnavailable: true
@@ -1873,7 +1937,7 @@ final class FileBrowserViewModel: ObservableObject {
             }
 
             if !silentFailure, result.status != -128 {
-                presentMessage("Could not connect server: \(url.absoluteString) (status \(result.status))")
+                presentMessage("Could not connect server: \(connectionURL.absoluteString) (status \(result.status))")
             }
         }
     }
@@ -1920,7 +1984,13 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
-    private func connectS3Server(url: URL, displayName: String?, silentFailure: Bool) {
+    private func connectS3Server(
+        url: URL,
+        replacing oldURL: URL? = nil,
+        displayName: String?,
+        awsProfile: String?,
+        silentFailure: Bool
+    ) {
         let connectionID = serverConnectionID(kind: .s3, urlString: url.absoluteString)
 
         guard reconnectingServerIDs.insert(connectionID).inserted else {
@@ -1934,8 +2004,9 @@ final class FileBrowserViewModel: ObservableObject {
                 upsertServerConnection(
                     kind: .s3,
                     url: result.url,
-                    replacing: url,
+                    replacing: oldURL ?? url,
                     displayName: displayName,
+                    awsProfile: awsProfile,
                     mountURL: nil,
                     isUnavailable: false
                 )
@@ -1949,7 +2020,9 @@ final class FileBrowserViewModel: ObservableObject {
                 upsertServerConnection(
                     kind: .s3,
                     url: url,
+                    replacing: oldURL,
                     displayName: displayName,
+                    awsProfile: awsProfile,
                     mountURL: nil,
                     isUnavailable: true
                 )
@@ -1993,11 +2066,15 @@ final class FileBrowserViewModel: ObservableObject {
         url: URL,
         replacing oldURL: URL? = nil,
         displayName: String?,
+        awsProfile: String? = nil,
         mountURL: URL?,
         isUnavailable: Bool
     ) {
         let urlString = url.absoluteString
         let mountPath = mountURL?.standardizedFileURL.path
+        let normalizedAWSProfile = kind == .s3
+            ? (awsProfile ?? S3Client.profile(for: url))
+            : nil
         let id = serverConnectionID(kind: kind, urlString: urlString)
 
         if let oldURL, oldURL.absoluteString != urlString {
@@ -2014,6 +2091,7 @@ final class FileBrowserViewModel: ObservableObject {
             if let displayName {
                 serverConnections[index].displayName = displayName
             }
+            serverConnections[index].awsProfile = normalizedAWSProfile
             serverConnections[index].mountPath = mountPath
             serverConnections[index].isUnavailable = isUnavailable
         } else {
@@ -2022,6 +2100,7 @@ final class FileBrowserViewModel: ObservableObject {
                     kind: kind,
                     urlString: urlString,
                     displayName: displayName,
+                    awsProfile: normalizedAWSProfile,
                     mountPath: mountPath,
                     isUnavailable: isUnavailable
                 )

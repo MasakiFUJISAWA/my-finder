@@ -1118,6 +1118,11 @@ struct ConnectServerSheet: View {
             .pickerStyle(.segmented)
             .onChange(of: browser.connectProtocol) { _, newValue in
                 browser.connectServerAddress = newValue.defaultAddress
+                browser.connectAWSProfile = ""
+
+                if newValue == .s3 {
+                    browser.refreshAWSProfiles()
+                }
             }
 
             TextField("Location name (optional)", text: $browser.connectServerDisplayName)
@@ -1134,6 +1139,17 @@ struct ConnectServerSheet: View {
                 .onSubmit {
                     browser.commitConnectServerDialog()
                 }
+
+            if browser.connectProtocol == .s3 {
+                Picker("AWS profile", selection: $browser.connectAWSProfile) {
+                    Text("Default").tag("")
+
+                    ForEach(browser.awsProfiles, id: \.self) { profile in
+                        Text(profile).tag(profile)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
 
             HStack {
                 Spacer()
@@ -1152,6 +1168,10 @@ struct ConnectServerSheet: View {
         .padding(20)
         .frame(width: 460)
         .onAppear {
+            if browser.connectProtocol == .s3 {
+                browser.refreshAWSProfiles()
+            }
+
             DispatchQueue.main.async {
                 focusedField = .address
             }
