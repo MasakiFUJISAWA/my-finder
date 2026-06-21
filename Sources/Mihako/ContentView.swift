@@ -674,12 +674,11 @@ struct FileActionBarView: View {
             ToolbarIconButton(systemImageName: "terminal", help: "Open in Terminal") {
                 browser.openInTerminal(browser.currentURL)
             }
-            .disabled(browser.isCurrentSFTP)
 
             ToolbarIconButton(systemImageName: "terminal.fill", help: "Open in iTerm") {
                 browser.openIniTerm(browser.currentURL)
             }
-            .disabled(!browser.isITermAvailable || browser.isCurrentSFTP)
+            .disabled(!browser.isITermAvailable)
 
             Divider()
                 .frame(height: 22)
@@ -1031,12 +1030,11 @@ struct FileContextMenu: View {
         Button("Open in Terminal") {
             browser.openInTerminal(item.url)
         }
-        .disabled(SFTPClient.isSFTPURL(item.url))
 
         Button("Open in iTerm") {
             browser.openIniTerm(item.url)
         }
-        .disabled(!browser.isITermAvailable || SFTPClient.isSFTPURL(item.url))
+        .disabled(!browser.isITermAvailable)
 
         Divider()
 
@@ -1070,12 +1068,11 @@ struct FolderContextMenu: View {
         Button("Open in Terminal") {
             browser.openInTerminal(browser.currentURL)
         }
-        .disabled(browser.isCurrentSFTP)
 
         Button("Open in iTerm") {
             browser.openIniTerm(browser.currentURL)
         }
-        .disabled(!browser.isITermAvailable || browser.isCurrentSFTP)
+        .disabled(!browser.isITermAvailable)
 
         Divider()
 
@@ -1174,12 +1171,12 @@ struct LocationContextMenu: View {
         Button("Open in Terminal") {
             browser.openInTerminal(location.url)
         }
-        .disabled(location.isUnavailable || SFTPClient.isSFTPURL(location.url))
+        .disabled(location.isUnavailable)
 
         Button("Open in iTerm") {
             browser.openIniTerm(location.url)
         }
-        .disabled(!browser.isITermAvailable || location.isUnavailable || SFTPClient.isSFTPURL(location.url))
+        .disabled(!browser.isITermAvailable || location.isUnavailable)
 
         Divider()
 

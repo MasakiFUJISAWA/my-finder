@@ -2410,13 +2410,15 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     private func openDirectory(_ url: URL, in terminalApp: TerminalApp) {
-        guard !SFTPClient.isSFTPURL(url) else {
-            presentMessage("Open in Terminal is not available for SFTP locations.")
+        let command: String
+
+        do {
+            command = try terminalCommand(for: url)
+        } catch {
+            presentError(error, action: terminalApp == .iTerm ? "Open in iTerm" : "Open in Terminal")
             return
         }
 
-        let directoryURL = directoryURL(for: url)
-        let command = "cd \(shellQuoted(directoryURL.path))"
         let escapedCommand = appleScriptEscaped(command)
 
         switch terminalApp {
@@ -2451,6 +2453,38 @@ final class FileBrowserViewModel: ObservableObject {
                 automationTarget: "iTerm"
             )
         }
+    }
+
+    private func terminalCommand(for url: URL) throws -> String {
+        if SFTPClient.isSFTPURL(url) {
+            return try remoteTerminalCommand(for: url)
+        }
+
+        let directoryURL = directoryURL(for: url)
+        return "cd \(shellQuoted(directoryURL.path))"
+    }
+
+    private func remoteTerminalCommand(for url: URL) throws -> String {
+        let spec = try SFTPClient.connectionSpec(for: url)
+        let remotePath = remoteDirectoryPath(for: url)
+        let remoteCommand = "cd \(shellQuoted(remotePath)) && exec ${SHELL:-/bin/sh} -l"
+        var arguments = ["ssh"]
+
+        if let port = spec.port {
+            arguments.append(contentsOf: ["-p", String(port)])
+        }
+
+        arguments.append(contentsOf: ["-t", spec.target, remoteCommand])
+        return arguments.map(shellQuoted).joined(separator: " ")
+    }
+
+    private func remoteDirectoryPath(for url: URL) -> String {
+        if let item = items.first(where: { $0.url == url }),
+           !item.canNavigateInto {
+            return SFTPClient.remotePath(for: SFTPClient.parentURL(for: url))
+        }
+
+        return SFTPClient.remotePath(for: url)
     }
 
     private func openSelectedFolder(in editor: ExternalEditor) {
