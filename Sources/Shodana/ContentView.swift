@@ -615,16 +615,28 @@ struct SearchToolbarControls: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     var body: some View {
+        TextField(L10n.string("Path"), text: $browser.addressText)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: NSFont.systemFontSize, design: .monospaced))
+            .lineLimit(1)
+            .onSubmit {
+                browser.performSearch()
+            }
+            .help(L10n.string("Search Path"))
+            .frame(minWidth: 220, maxWidth: .infinity)
+            .frame(height: 24)
+            .layoutPriority(1)
+
         TextField(L10n.string("Search"), text: $browser.searchText)
             .textFieldStyle(.roundedBorder)
             .lineLimit(1)
             .onSubmit {
                 browser.performSearch()
             }
-            .help(L10n.string("Search in current folder"))
-            .frame(maxWidth: .infinity)
+            .help(L10n.string("Search below path"))
+            .frame(minWidth: 180, maxWidth: .infinity)
             .frame(height: 24)
-            .layoutPriority(1)
+            .layoutPriority(2)
 
         Button {
             browser.performSearch()

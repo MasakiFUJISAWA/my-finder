@@ -15,6 +15,8 @@
 "Folder or search results" = "フォルダ表示または検索結果表示";
 "Search" = "検索";
 "Search in current folder" = "現在のフォルダ内を検索";
+"Search Path" = "検索対象パス";
+"Search below path" = "パス配下を検索";
 "Search Results" = "検索結果";
 "Searching..." = "検索中...";
 "Enter a search term" = "検索語を入力してください";

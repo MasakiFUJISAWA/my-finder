@@ -409,17 +409,48 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        hasPerformedSearch = true
-
-        if isCurrentRemote {
-            searchResults = sortedItems(items.filter { item in
-                Self.matchesSearch(query: query, value: item.displayName)
-            })
+        guard let rootURL = searchRootURLFromAddress() else {
+            searchResults = []
             isSearching = false
+            hasPerformedSearch = false
             return
         }
 
-        let rootURL = currentURL
+        hasPerformedSearch = true
+        addressText = displayString(for: rootURL)
+
+        if SFTPClient.isSFTPURL(rootURL) || S3Client.isS3URL(rootURL) {
+            isSearching = true
+            searchTask = Task { [weak self] in
+                do {
+                    let rootItems = try await self?.itemsForDisplay(at: rootURL) ?? []
+                    let results = rootItems.filter { item in
+                        Self.matchesSearch(query: query, value: item.displayName)
+                    }
+
+                    await MainActor.run { [weak self] in
+                        guard let self, !Task.isCancelled else {
+                            return
+                        }
+
+                        self.searchResults = self.sortedItems(results)
+                        self.isSearching = false
+                    }
+                } catch {
+                    await MainActor.run { [weak self] in
+                        guard let self, !Task.isCancelled else {
+                            return
+                        }
+
+                        self.searchResults = []
+                        self.isSearching = false
+                        self.presentError(error, action: "Search")
+                    }
+                }
+            }
+            return
+        }
+
         let shouldShowHiddenFiles = showHiddenFiles
         isSearching = true
 
@@ -461,12 +492,82 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func searchRootURLFromAddress() -> URL? {
+        let rawPath = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !rawPath.isEmpty else {
+            addressText = displayString(for: currentURL)
+            return currentURL
+        }
+
+        if rawPath.lowercased().hasPrefix("sftp://") {
+            guard let targetURL = URL(string: rawPath) else {
+                presentMessage("Invalid SFTP URL: \(rawPath)")
+                return nil
+            }
+
+            return targetURL
+        }
+
+        if rawPath.lowercased().hasPrefix("s3://") {
+            guard let targetURL = URL(string: rawPath) else {
+                presentMessage("Invalid S3 URL: \(rawPath)")
+                return nil
+            }
+
+            return targetURL
+        }
+
+        if isCurrentSFTP {
+            let targetPath = rawPath.hasPrefix("/")
+                ? rawPath
+                : SFTPClient.remotePath(for: currentURL).appendingRemotePathComponent(rawPath)
+            return SFTPClient.url(bySettingPath: targetPath, on: currentURL)
+        }
+
+        if isCurrentS3 {
+            let currentPrefix = S3Client.directoryPrefix(for: currentURL)
+            let targetPrefix = rawPath.hasPrefix("/")
+                ? String(rawPath.drop { $0 == "/" })
+                : currentPrefix.appendingS3PrefixComponent(rawPath)
+            return S3Client.url(bySettingPrefix: targetPrefix, on: currentURL)
+        }
+
+        let expandedPath = (rawPath as NSString).expandingTildeInPath
+        let targetURL = expandedPath.hasPrefix("/")
+            ? URL(fileURLWithPath: expandedPath, isDirectory: true)
+            : currentURL.appendingPathComponent(expandedPath, isDirectory: true)
+        let standardizedURL = targetURL.standardizedFileURL
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: standardizedURL.path, isDirectory: &isDirectory) else {
+            presentMessage("Path does not exist: \(standardizedURL.path)")
+            return nil
+        }
+
+        guard isDirectory.boolValue else {
+            presentMessage("Search path is not a folder: \(standardizedURL.path)")
+            return nil
+        }
+
+        return standardizedURL
+    }
+
     private nonisolated static func searchLocalItems(
         matching query: String,
         in rootURL: URL,
         showHiddenFiles: Bool
     ) async throws -> [FileItem] {
         try await Task.detached(priority: .userInitiated) {
+            if let spotlightItems = try? searchLocalItemsWithSpotlight(
+                matching: query,
+                in: rootURL,
+                showHiddenFiles: showHiddenFiles
+            ),
+               !spotlightItems.isEmpty {
+                return spotlightItems
+            }
+
             let keys: [URLResourceKey] = [
                 .isDirectoryKey,
                 .isPackageKey,
@@ -508,6 +609,61 @@ final class FileBrowserViewModel: ObservableObject {
 
             return results
         }.value
+    }
+
+    private nonisolated static func searchLocalItemsWithSpotlight(
+        matching query: String,
+        in rootURL: URL,
+        showHiddenFiles: Bool
+    ) throws -> [FileItem] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = [
+            "-0",
+            "-onlyin",
+            rootURL.path,
+            spotlightPredicate(for: query)
+        ]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw CocoaError(.executableLoad)
+        }
+
+        return outputPipe.fileHandleForReading
+            .readDataToEndOfFile()
+            .split(separator: 0)
+            .compactMap { bytes -> FileItem? in
+                guard let path = String(data: Data(bytes), encoding: .utf8) else {
+                    return nil
+                }
+
+                let url = URL(fileURLWithPath: path)
+
+                guard let item = try? FileItem.load(from: url),
+                      showHiddenFiles || !item.isHidden else {
+                    return nil
+                }
+
+                return item
+            }
+    }
+
+    private nonisolated static func spotlightPredicate(for query: String) -> String {
+        let escapedQuery = query
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        return """
+        kMDItemFSName == "*\(escapedQuery)*"cd || kMDItemDisplayName == "*\(escapedQuery)*"cd
+        """
     }
 
     private nonisolated static func matchesSearch(query: String, value: String) -> Bool {
