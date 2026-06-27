@@ -1,4 +1,5 @@
 import AppKit
+import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1764,7 +1765,19 @@ struct FileColumnRow: View {
             browser.select(item)
             browser.open(item)
         })
-        .overlay(FileDragInteractionView(item: item).environmentObject(browser))
+        .overlay(
+            FileDragInteractionView(
+                item: item,
+                onSingleClick: { selectedItem in
+                    onSelect(selectedItem)
+                },
+                onDoubleClick: { selectedItem in
+                    browser.select(selectedItem)
+                    browser.open(selectedItem)
+                }
+            )
+            .environmentObject(browser)
+        )
         .onDrop(
             of: MihakoTransferType.urlDropTypeIdentifiers,
             isTargeted: nil
@@ -1863,34 +1876,78 @@ struct FilePreviewVisual: View {
     let item: FileItem
     let compact: Bool
 
-    private var previewImage: NSImage? {
-        guard !SFTPClient.isSFTPURL(item.url),
-              !S3Client.isS3URL(item.url),
-              !item.isDirectory,
-              let type = UTType(filenameExtension: item.url.pathExtension),
-              type.conforms(to: .image) else {
-            return nil
-        }
-
-        return NSImage(contentsOf: item.url)
+    var body: some View {
+        QuickLookThumbnailView(
+            item: item,
+            maxWidth: compact ? 190 : 520,
+            maxHeight: compact ? 160 : 340,
+            fallbackIconSize: compact ? 82 : 128
+        )
     }
+}
+
+struct QuickLookThumbnailView: View {
+    let item: FileItem
+    let maxWidth: CGFloat
+    let maxHeight: CGFloat
+    let fallbackIconSize: CGFloat
+
+    @State private var thumbnail: NSImage?
+    @State private var thumbnailURL: URL?
 
     var body: some View {
-        if let previewImage {
-            Image(nsImage: previewImage)
-                .resizable()
-                .scaledToFit()
-                .frame(
-                    maxWidth: compact ? 190 : 420,
-                    maxHeight: compact ? 160 : 280
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        } else {
-            FileSystemIcon(item: item, size: compact ? 82 : 128)
-                .frame(
-                    width: compact ? 110 : 170,
-                    height: compact ? 110 : 170
-                )
+        Group {
+            if let thumbnail, thumbnailURL == item.url {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                FileSystemIcon(item: item, size: fallbackIconSize)
+                    .frame(
+                        width: fallbackIconSize + 42,
+                        height: fallbackIconSize + 42
+                    )
+            }
+        }
+        .onAppear {
+            loadThumbnail()
+        }
+        .onChange(of: item.url) { _, _ in
+            loadThumbnail()
+        }
+    }
+
+    private func loadThumbnail() {
+        thumbnail = nil
+        thumbnailURL = item.url
+
+        guard !SFTPClient.isSFTPURL(item.url),
+              !S3Client.isS3URL(item.url),
+              !item.isDirectory else {
+            return
+        }
+
+        let targetURL = item.url
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let request = QLThumbnailGenerator.Request(
+            fileAt: targetURL,
+            size: CGSize(width: maxWidth, height: maxHeight),
+            scale: scale,
+            representationTypes: .all
+        )
+
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
+            let image = representation?.nsImage
+
+            Task { @MainActor in
+                guard thumbnailURL == targetURL else {
+                    return
+                }
+
+                thumbnail = image
+            }
         }
     }
 }
@@ -1952,6 +2009,18 @@ struct FileDragInteractionView: NSViewRepresentable {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     let item: FileItem
+    var onSingleClick: ((FileItem) -> Void)?
+    var onDoubleClick: ((FileItem) -> Void)?
+
+    init(
+        item: FileItem,
+        onSingleClick: ((FileItem) -> Void)? = nil,
+        onDoubleClick: ((FileItem) -> Void)? = nil
+    ) {
+        self.item = item
+        self.onSingleClick = onSingleClick
+        self.onDoubleClick = onDoubleClick
+    }
 
     func makeNSView(context: Context) -> FileDragInteractionNSView {
         FileDragInteractionNSView()
@@ -1960,6 +2029,8 @@ struct FileDragInteractionView: NSViewRepresentable {
     func updateNSView(_ view: FileDragInteractionNSView, context: Context) {
         view.browser = browser
         view.item = item
+        view.onSingleClick = onSingleClick
+        view.onDoubleClick = onDoubleClick
     }
 }
 
@@ -1967,6 +2038,8 @@ struct FileDragInteractionView: NSViewRepresentable {
 final class FileDragInteractionNSView: NSView, NSDraggingSource {
     weak var browser: FileBrowserViewModel?
     var item: FileItem?
+    var onSingleClick: ((FileItem) -> Void)?
+    var onDoubleClick: ((FileItem) -> Void)?
 
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
@@ -1989,14 +2062,26 @@ final class FileDragInteractionNSView: NSView, NSDraggingSource {
         mouseDownEvent = event
         browser.activateFilePane()
 
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if !browser.selectedIDs.contains(item.url) || flags.contains(.command) || flags.contains(.shift) {
-            browser.select(item)
-        }
-
         if event.clickCount == 2 {
-            browser.open(item)
+            if let onDoubleClick {
+                onDoubleClick(item)
+            } else {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if !browser.selectedIDs.contains(item.url) || flags.contains(.command) || flags.contains(.shift) {
+                    browser.select(item)
+                }
+                browser.open(item)
+            }
             mouseDownEvent = nil
+        } else {
+            if let onSingleClick {
+                onSingleClick(item)
+            } else {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if !browser.selectedIDs.contains(item.url) || flags.contains(.command) || flags.contains(.shift) {
+                    browser.select(item)
+                }
+            }
         }
     }
 
