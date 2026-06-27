@@ -18,13 +18,17 @@ Mihako は Swift / SwiftUI / AppKit で作っている macOS アプリです。S
 ## 主な機能
 
 - アドレスバーへ直接パスを入力して移動
+- 通常のフォルダ表示と検索結果表示の切り替え
 - パンくずリストで上位階層へ移動
 - 戻る、進む、上の階層へ移動
-- 一覧表示とアイコン表示の切り替え
+- 一覧表示、アイコン表示、カラム表示、ギャラリー表示の切り替え
+- 種類、変更日、サイズによるグループ表示
 - 業務ファイル向けの詳細表示
 - ファイル/フォルダの新規作成、名前変更、複製、削除
 - Command+C / Command+X / Command+V によるコピー、切り取り、貼り付け
 - 右クリックメニューからコピー、切り取り、貼り付け、パスコピー、Finder 表示
+- `.app` などのパッケージを右クリックして内容を表示
+- 右クリックメニューから ZIP / TAR / TAR.GZ / TAR.BZ2 / TAR.XZ 形式で圧縮、同じ形式を解凍
 - サイドバーの Favorites へフォルダをドラッグ&ドロップで追加
 - Locations に Google Drive、OneDrive、SharePoint、マウント済みボリューム、NAS などを表示
 - SMB、SFTP、S3 接続
@@ -119,9 +123,12 @@ cp -R .build/release/Mihako.app /Applications/
 
 右側の上部にはアドレスバーがあります。ここへ `/Users/yourname/Documents` のようなローカルパス、`sftp://...`、`s3://...` のようなリモートパスを入力して移動できます。
 
+アドレスバー行の左端には、通常のフォルダ表示と検索結果表示を切り替えるボタンがあります。検索結果表示に切り替えると、アドレスバー行は検索欄と検索ボタンになり、パンくずリストは隠れます。ローカルフォルダでは現在表示しているフォルダ配下を再帰検索し、SFTP/S3 では現在表示中の一覧から名前で絞り込みます。
+
 ファイル一覧の上には操作ボタンがあります。
 
-- 上の階層へ移動
+- 表示形式の切り替え: 一覧、アイコン、カラム、ギャラリー
+- グループ表示: なし、種類、変更日、サイズ
 - フォルダ作成
 - ファイル作成
 - 削除
@@ -242,6 +249,14 @@ open ".build/Mihako Downloads.app"
 ```sh
 scripts/create-open-in-mihako-launcher.sh "$HOME/Documents" ".build/Mihako Documents.app"
 ```
+
+Dock上のMihakoアイコンを右クリックすると、次のメニューから新規ウィンドウを開けます。
+
+- `New Window`: 通常の新規ウィンドウ
+- `New Window (Desktop)`: Desktopを開く新規ウィンドウ
+- `New Window (Downloads)`: Downloadsを開く新規ウィンドウ
+
+メニューバーの `Launcher Folders...` から、Dockメニューに表示する任意のフォルダーショートカットを追加、削除、並び替えできます。
 
 なお、macOSではFinderが特別扱いされるため、Dockの標準Downloadsスタック、Finderを明示的に呼ぶアプリ、保存/選択ダイアログなどはFinderのままです。Mihako側では、Launch ServicesやURLスキーム経由で渡ってくるフォルダを受け取れるようにしています。
 

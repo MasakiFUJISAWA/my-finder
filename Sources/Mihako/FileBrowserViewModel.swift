@@ -9,8 +9,9 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var addressText: String
     @Published private(set) var items: [FileItem] = []
     @Published var selectedIDs: Set<URL> = []
-    @Published var showHiddenFiles = false {
+    @Published var showHiddenFiles = UserDefaults.standard.bool(forKey: showHiddenFilesDefaultsKey) {
         didSet {
+            UserDefaults.standard.set(showHiddenFiles, forKey: Self.showHiddenFilesDefaultsKey)
             reload()
         }
     }
@@ -21,6 +22,20 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var pendingClipboardOperation: FileClipboardOperation?
     @Published private(set) var sidebarSections: [SidebarSection] = []
     @Published var viewMode: BrowserViewMode = .list
+    @Published var contentMode: BrowserContentMode = .folder {
+        didSet {
+            guard oldValue != contentMode else {
+                return
+            }
+
+            selectedIDs.removeAll()
+            selectionAnchorURL = nil
+        }
+    }
+    @Published var searchText = ""
+    @Published private(set) var searchResults: [FileItem] = []
+    @Published private(set) var isSearching = false
+    @Published private(set) var hasPerformedSearch = false
     @Published private(set) var userFavoriteFolders: [URL] = []
     @Published private(set) var serverConnections: [ServerConnection] = []
     @Published var isConnectServerDialogPresented = false
@@ -33,6 +48,11 @@ final class FileBrowserViewModel: ObservableObject {
     @Published private(set) var appAppearanceMode: AppAppearanceMode = AppAppearance.mode
     @Published private(set) var externalTools: [ExternalTool] = []
     @Published var isExternalToolsSettingsPresented = false
+    @Published private(set) var launcherFolderShortcuts: [LauncherFolderShortcut] = []
+    @Published var isLauncherFoldersSettingsPresented = false
+    @Published var groupMode: FileGroupMode = .none
+
+    private static let showHiddenFilesDefaultsKey = "Mihako.showHiddenFiles"
 
     private let fileManager = FileManager.default
     private let userFavoritesDefaultsKey = "Mihako.userFavoriteFolders"
@@ -47,6 +67,7 @@ final class FileBrowserViewModel: ObservableObject {
     private var reconnectingServerIDs: Set<String> = []
     private var sidebarLocationOrderIDs: [String] = []
     private var remoteReloadTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
 
     private enum TerminalApp {
         case terminal
@@ -77,6 +98,7 @@ final class FileBrowserViewModel: ObservableObject {
         )
         sidebarLocationOrderIDs = Self.loadSidebarLocationOrder(defaultsKey: sidebarLocationOrderDefaultsKey)
         externalTools = Self.loadExternalTools(defaultsKey: externalToolsDefaultsKey)
+        launcherFolderShortcuts = LauncherFolderShortcutStore.load()
         refreshSidebarLocations()
         reload()
         reconnectSavedServers()
@@ -102,12 +124,20 @@ final class FileBrowserViewModel: ObservableObject {
         return currentURL.path != "/"
     }
 
+    var displayedItems: [FileItem] {
+        contentMode == .search ? searchResults : items
+    }
+
     var selectedItems: [FileItem] {
-        items.filter { selectedIDs.contains($0.url) }
+        displayedItems.filter { selectedIDs.contains($0.url) }
     }
 
     var selectedURLs: [URL] {
         selectedItems.map(\.url)
+    }
+
+    var groupedItems: [FileItemGroup] {
+        groupedItems(for: displayedItems)
     }
 
     var selectedFolderURL: URL? {
@@ -246,27 +276,8 @@ final class FileBrowserViewModel: ObservableObject {
 
         remoteReloadTask?.cancel()
 
-        let keys: [URLResourceKey] = [
-            .isDirectoryKey,
-            .isPackageKey,
-            .fileSizeKey,
-            .totalFileAllocatedSizeKey,
-            .contentModificationDateKey,
-            .localizedTypeDescriptionKey,
-            .isHiddenKey,
-            .localizedNameKey
-        ]
-
         do {
-            let options: FileManager.DirectoryEnumerationOptions = showHiddenFiles ? [] : [.skipsHiddenFiles]
-            let urls = try fileManager.contentsOfDirectory(
-                at: currentURL,
-                includingPropertiesForKeys: keys,
-                options: options
-            )
-
-            let loadedItems = try urls.map(FileItem.load)
-            items = sortedItems(loadedItems)
+            items = sortedItems(try loadLocalItems(at: currentURL))
             selectedIDs = selectedIDs.filter { selectedURL in
                 items.contains { $0.url == selectedURL }
             }
@@ -280,6 +291,221 @@ final class FileBrowserViewModel: ObservableObject {
             selectionAnchorURL = nil
             presentError(error, action: "Read folder")
         }
+    }
+
+    private func loadLocalItems(at url: URL) throws -> [FileItem] {
+        let keys: [URLResourceKey] = [
+            .isDirectoryKey,
+            .isPackageKey,
+            .fileSizeKey,
+            .totalFileAllocatedSizeKey,
+            .contentModificationDateKey,
+            .localizedTypeDescriptionKey,
+            .isHiddenKey,
+            .localizedNameKey
+        ]
+
+        let options: FileManager.DirectoryEnumerationOptions = showHiddenFiles ? [] : [.skipsHiddenFiles]
+        let urls = try fileManager.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: options
+        )
+
+        return try urls.map(FileItem.load)
+    }
+
+    func itemsForDisplay(at url: URL) async throws -> [FileItem] {
+        if SFTPClient.isSFTPURL(url) {
+            let result = try await SFTPClient.listDirectory(at: url, showHiddenFiles: showHiddenFiles)
+            return sortedItems(result.items)
+        }
+
+        if S3Client.isS3URL(url) {
+            let result = try await S3Client.listDirectory(at: url, showHiddenFiles: showHiddenFiles)
+            return sortedItems(result.items)
+        }
+
+        return try sortedItems(loadLocalItems(at: url))
+    }
+
+    func groupedItems(for values: [FileItem]) -> [FileItemGroup] {
+        guard groupMode != .none else {
+            return [
+                FileItemGroup(
+                    id: FileGroupMode.none.rawValue,
+                    title: "",
+                    items: values
+                )
+            ]
+        }
+
+        var groups: [FileItemGroup] = []
+        var indexesByID: [String: Int] = [:]
+
+        for item in values {
+            let descriptor = groupDescriptor(for: item)
+
+            if let index = indexesByID[descriptor.id] {
+                let group = groups[index]
+                groups[index] = FileItemGroup(
+                    id: group.id,
+                    title: group.title,
+                    items: group.items + [item]
+                )
+            } else {
+                indexesByID[descriptor.id] = groups.count
+                groups.append(
+                    FileItemGroup(
+                        id: descriptor.id,
+                        title: descriptor.title,
+                        items: [item]
+                    )
+                )
+            }
+        }
+
+        return groups.sorted { left, right in
+            left.id.localizedStandardCompare(right.id) == .orderedAscending
+        }
+    }
+
+    var emptyListMessage: String {
+        guard contentMode == .search else {
+            return L10n.string("Empty Folder")
+        }
+
+        if isSearching {
+            return L10n.string("Searching...")
+        }
+
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !hasPerformedSearch {
+            return L10n.string("Enter a search term")
+        }
+
+        return L10n.string("No Results")
+    }
+
+    func performSearch() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        contentMode = .search
+        searchTask?.cancel()
+        selectedIDs.removeAll()
+        selectionAnchorURL = nil
+
+        guard !query.isEmpty else {
+            searchResults = []
+            isSearching = false
+            hasPerformedSearch = false
+            return
+        }
+
+        hasPerformedSearch = true
+
+        if isCurrentRemote {
+            searchResults = sortedItems(items.filter { item in
+                Self.matchesSearch(query: query, value: item.displayName)
+            })
+            isSearching = false
+            return
+        }
+
+        let rootURL = currentURL
+        let shouldShowHiddenFiles = showHiddenFiles
+        isSearching = true
+
+        searchTask = Task { [weak self] in
+            do {
+                let results = try await Self.searchLocalItems(
+                    matching: query,
+                    in: rootURL,
+                    showHiddenFiles: shouldShowHiddenFiles
+                )
+
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.searchResults = self.sortedItems(results)
+                    self.isSearching = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.isSearching = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.searchResults = []
+                    self.isSearching = false
+                    self.presentError(error, action: "Search")
+                }
+            }
+        }
+    }
+
+    private nonisolated static func searchLocalItems(
+        matching query: String,
+        in rootURL: URL,
+        showHiddenFiles: Bool
+    ) async throws -> [FileItem] {
+        try await Task.detached(priority: .userInitiated) {
+            let keys: [URLResourceKey] = [
+                .isDirectoryKey,
+                .isPackageKey,
+                .fileSizeKey,
+                .totalFileAllocatedSizeKey,
+                .contentModificationDateKey,
+                .localizedTypeDescriptionKey,
+                .isHiddenKey,
+                .localizedNameKey
+            ]
+            var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+
+            if !showHiddenFiles {
+                options.insert(.skipsHiddenFiles)
+            }
+
+            let enumerator = FileManager.default.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: keys,
+                options: options
+            ) { _, _ in
+                true
+            }
+            var results: [FileItem] = []
+
+            while let url = enumerator?.nextObject() as? URL {
+                try Task.checkCancellation()
+
+                let values = try? url.resourceValues(forKeys: [.localizedNameKey])
+                let displayName = values?.localizedName ?? url.lastPathComponent
+
+                guard matchesSearch(query: query, value: displayName),
+                      let item = try? FileItem.load(from: url) else {
+                    continue
+                }
+
+                results.append(item)
+            }
+
+            return results
+        }.value
+    }
+
+    private nonisolated static func matchesSearch(query: String, value: String) -> Bool {
+        value.range(
+            of: query,
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ) != nil
     }
 
     private func reloadSFTPDirectory() {
@@ -448,6 +674,10 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func navigate(to url: URL, recordHistory: Bool = true) {
+        contentMode = .folder
+        searchTask?.cancel()
+        isSearching = false
+
         if SFTPClient.isSFTPURL(url) {
             navigateToSFTP(url, recordHistory: recordHistory)
             return
@@ -511,6 +741,40 @@ final class FileBrowserViewModel: ObservableObject {
         } else {
             navigate(to: targetURL.deletingLastPathComponent())
             NSWorkspace.shared.open(targetURL)
+        }
+    }
+
+    private func resolvedAliasOrSymlinkDestination(for url: URL) -> URL? {
+        guard !isRemoteURL(url),
+              let values = try? url.resourceValues(forKeys: [.isAliasFileKey, .isSymbolicLinkKey]) else {
+            return nil
+        }
+
+        if values.isAliasFile == true {
+            return try? URL(resolvingAliasFileAt: url, options: [])
+        }
+
+        if values.isSymbolicLink == true {
+            let resolvedURL = url.resolvingSymlinksInPath()
+            return resolvedURL == url ? nil : resolvedURL
+        }
+
+        return nil
+    }
+
+    private func openResolvedLocalDestination(_ resolvedURL: URL, fallbackURL: URL) {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey]
+        let values = try? resolvedURL.resourceValues(forKeys: keys)
+
+        if values?.isDirectory == true, values?.isPackage != true {
+            navigate(to: resolvedURL)
+            return
+        }
+
+        if fileManager.fileExists(atPath: resolvedURL.path) {
+            NSWorkspace.shared.open(resolvedURL)
+        } else {
+            NSWorkspace.shared.open(fallbackURL)
         }
     }
 
@@ -587,7 +851,9 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func open(_ item: FileItem) {
-        if item.canNavigateInto {
+        if let resolvedURL = resolvedAliasOrSymlinkDestination(for: item.url) {
+            openResolvedLocalDestination(resolvedURL, fallbackURL: item.url)
+        } else if item.canNavigateInto {
             navigate(to: item.url)
         } else if SFTPClient.isSFTPURL(item.url) {
             downloadAndOpen(item.url)
@@ -596,6 +862,14 @@ final class FileBrowserViewModel: ObservableObject {
         } else {
             NSWorkspace.shared.open(item.url)
         }
+    }
+
+    func showPackageContents(_ item: FileItem) {
+        guard item.isPackage, !isRemoteURL(item.url) else {
+            return
+        }
+
+        navigate(to: item.url)
     }
 
     func openSelected() {
@@ -664,8 +938,10 @@ final class FileBrowserViewModel: ObservableObject {
             ?? firstSelectedURLInDisplayOrder()
             ?? url
 
-        guard let anchorIndex = items.firstIndex(where: { $0.url == anchorURL }),
-              let endIndex = items.firstIndex(where: { $0.url == url }) else {
+        let selectableItems = displayedItems
+
+        guard let anchorIndex = selectableItems.firstIndex(where: { $0.url == anchorURL }),
+              let endIndex = selectableItems.firstIndex(where: { $0.url == url }) else {
             selectOnly(url)
             return
         }
@@ -674,12 +950,12 @@ final class FileBrowserViewModel: ObservableObject {
             ? anchorIndex...endIndex
             : endIndex...anchorIndex
 
-        selectedIDs = Set(items[bounds].map(\.url))
+        selectedIDs = Set(selectableItems[bounds].map(\.url))
         selectionAnchorURL = anchorURL
     }
 
     private func firstSelectedURLInDisplayOrder() -> URL? {
-        items.first { selectedIDs.contains($0.url) }?.url
+        displayedItems.first { selectedIDs.contains($0.url) }?.url
     }
 
     func dragProvider(for item: FileItem) -> NSItemProvider {
@@ -788,7 +1064,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     private func draggedURLs(for item: FileItem) -> [URL] {
         if selectedIDs.contains(item.url) {
-            let selectedURLsInDisplayOrder = items
+            let selectedURLsInDisplayOrder = displayedItems
                 .filter { selectedIDs.contains($0.url) }
                 .map(\.url)
 
@@ -911,6 +1187,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         items = sortedItems(items)
+        searchResults = sortedItems(searchResults)
     }
 
     func createFolder() {
@@ -1200,7 +1477,7 @@ final class FileBrowserViewModel: ObservableObject {
             return
         }
 
-        selectedIDs = Set(items.map(\.url))
+        selectedIDs = Set(displayedItems.map(\.url))
         selectionAnchorURL = firstSelectedURLInDisplayOrder()
     }
 
@@ -1397,6 +1674,167 @@ final class FileBrowserViewModel: ObservableObject {
                 presentError(error, action: "Duplicate S3 item")
             }
         }
+    }
+
+    func canCompress(_ item: FileItem) -> Bool {
+        let items = contextualItems(for: item)
+        return !items.isEmpty && items.allSatisfy { !isRemoteURL($0.url) }
+    }
+
+    func canExtract(_ item: FileItem) -> Bool {
+        let items = contextualItems(for: item)
+        return !items.isEmpty && items.allSatisfy {
+            !$0.isDirectory && !isRemoteURL($0.url) && ArchiveFormat.format(for: $0.url) != nil
+        }
+    }
+
+    func compress(_ item: FileItem, as format: ArchiveFormat) {
+        let items = contextualItems(for: item)
+        let urls = items.map(\.url)
+
+        guard !urls.isEmpty,
+              urls.allSatisfy({ !isRemoteURL($0) }),
+              let parentDirectory = commonParentDirectory(for: urls) else {
+            return
+        }
+
+        let baseName = archiveBaseName(for: items)
+        let destinationURL = uniqueArchiveURL(
+            in: parentDirectory,
+            baseName: baseName,
+            fileExtension: format.fileExtension
+        )
+        let sourceNames = urls.map(\.lastPathComponent)
+
+        Task {
+            do {
+                try await ArchiveClient.createArchive(
+                    format: format,
+                    sourceNames: sourceNames,
+                    parentDirectory: parentDirectory,
+                    destinationURL: destinationURL
+                )
+                reload()
+                selectOnly(destinationURL)
+            } catch {
+                presentError(error, action: "Compress")
+            }
+        }
+    }
+
+    func extract(_ item: FileItem) {
+        let items = contextualItems(for: item)
+
+        guard canExtract(item) else {
+            return
+        }
+
+        Task {
+            do {
+                var extractedURLs: [URL] = []
+
+                for item in items {
+                    guard let format = ArchiveFormat.format(for: item.url) else {
+                        continue
+                    }
+
+                    let parentDirectory = item.url.deletingLastPathComponent()
+                    let destinationDirectory = uniqueURL(
+                        in: parentDirectory,
+                        baseName: extractionBaseName(for: item.url),
+                        pathExtension: "",
+                        copyStyle: false
+                    )
+
+                    try await ArchiveClient.extractArchive(
+                        format: format,
+                        archiveURL: item.url,
+                        destinationDirectory: destinationDirectory
+                    )
+                    extractedURLs.append(destinationDirectory)
+                }
+
+                reload()
+                selectedIDs = Set(extractedURLs)
+                selectionAnchorURL = extractedURLs.first
+            } catch {
+                presentError(error, action: "Extract")
+            }
+        }
+    }
+
+    private func contextualItems(for item: FileItem) -> [FileItem] {
+        if selectedIDs.contains(item.url), !selectedItems.isEmpty {
+            return selectedItems
+        }
+
+        return [item]
+    }
+
+    private func commonParentDirectory(for urls: [URL]) -> URL? {
+        guard let firstURL = urls.first else {
+            return nil
+        }
+
+        let firstParent = firstURL.deletingLastPathComponent().standardizedFileURL
+
+        guard urls.allSatisfy({ $0.deletingLastPathComponent().standardizedFileURL == firstParent }) else {
+            return nil
+        }
+
+        return firstParent
+    }
+
+    private func archiveBaseName(for items: [FileItem]) -> String {
+        guard items.count == 1, let item = items.first else {
+            return L10n.string("Archive")
+        }
+
+        return item.displayName
+    }
+
+    private func uniqueArchiveURL(in folder: URL, baseName: String, fileExtension: String) -> URL {
+        func makeURL(name: String) -> URL {
+            folder.appendingPathComponent(name).appendingPathExtension(fileExtension)
+        }
+
+        let firstURL = makeURL(name: baseName)
+
+        guard !fileManager.fileExists(atPath: firstURL.path) else {
+            var index = 2
+
+            while true {
+                let candidateURL = makeURL(name: "\(baseName) \(index)")
+
+                if !fileManager.fileExists(atPath: candidateURL.path) {
+                    return candidateURL
+                }
+
+                index += 1
+            }
+        }
+
+        return firstURL
+    }
+
+    private func extractionBaseName(for archiveURL: URL) -> String {
+        let filename = archiveURL.lastPathComponent
+        let lowercasedFilename = filename.lowercased()
+        let knownExtensions = ArchiveFormat.allCases
+            .flatMap(\.knownExtensions)
+            .sorted { $0.count > $1.count }
+
+        for pathExtension in knownExtensions where lowercasedFilename.hasSuffix(".\(pathExtension)") {
+            let dropCount = pathExtension.count + 1
+            let baseName = String(filename.dropLast(dropCount))
+
+            if !baseName.isEmpty {
+                return baseName
+            }
+        }
+
+        return archiveURL.deletingPathExtension().lastPathComponent.nilIfEmpty
+            ?? L10n.string("Extracted Archive")
     }
 
     func trashSelection() {
@@ -1614,10 +2052,20 @@ final class FileBrowserViewModel: ObservableObject {
         isExternalToolsSettingsPresented = true
     }
 
+    func showLauncherFoldersSettings() {
+        isLauncherFoldersSettingsPresented = true
+    }
+
     func saveExternalTools(_ tools: [ExternalTool]) {
         externalTools = tools.map(\.normalized)
         saveExternalTools()
         isExternalToolsSettingsPresented = false
+    }
+
+    func saveLauncherFolderShortcuts(_ shortcuts: [LauncherFolderShortcut]) {
+        launcherFolderShortcuts = shortcuts.map(\.normalized)
+        LauncherFolderShortcutStore.save(launcherFolderShortcuts)
+        isLauncherFoldersSettingsPresented = false
     }
 
     func resetExternalTools() {
@@ -2799,6 +3247,78 @@ final class FileBrowserViewModel: ObservableObject {
             }
 
             return sortAscending ? comparison == .orderedAscending : comparison == .orderedDescending
+        }
+    }
+
+    private func groupDescriptor(for item: FileItem) -> (id: String, title: String) {
+        switch groupMode {
+        case .none:
+            return (FileGroupMode.none.rawValue, "")
+        case .kind:
+            let title = item.isDirectory ? L10n.string("Folder") : L10n.string(item.kind)
+            return ("kind-\(title)", title)
+        case .modifiedDate:
+            return modifiedDateGroupDescriptor(for: item.modifiedAt)
+        case .size:
+            return sizeGroupDescriptor(for: item)
+        }
+    }
+
+    private func modifiedDateGroupDescriptor(for date: Date?) -> (id: String, title: String) {
+        guard let date else {
+            return ("date-none", L10n.string("No Date"))
+        }
+
+        let calendar = Calendar.current
+        let now = Date()
+
+        if calendar.isDateInToday(date) {
+            return ("date-0-today", L10n.string("Today"))
+        }
+
+        if calendar.isDateInYesterday(date) {
+            return ("date-1-yesterday", L10n.string("Yesterday"))
+        }
+
+        guard let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day else {
+            return ("date-unknown", L10n.string("No Date"))
+        }
+
+        if days < 7 {
+            return ("date-2-week", L10n.string("Previous 7 Days"))
+        }
+
+        if days < 30 {
+            return ("date-3-month", L10n.string("Previous 30 Days"))
+        }
+
+        if calendar.component(.year, from: date) == calendar.component(.year, from: now) {
+            return ("date-4-year", L10n.string("This Year"))
+        }
+
+        return ("date-5-older", L10n.string("Older"))
+    }
+
+    private func sizeGroupDescriptor(for item: FileItem) -> (id: String, title: String) {
+        guard !item.isDirectory else {
+            return ("size-0-folders", L10n.string("Folders"))
+        }
+
+        guard let size = item.size else {
+            return ("size-1-none", L10n.string("No Size"))
+        }
+
+        switch size {
+        case 0:
+            return ("size-2-zero", L10n.string("Zero KB"))
+        case 1..<(1_000_000):
+            return ("size-3-small", L10n.string("Small"))
+        case 1_000_000..<(100_000_000):
+            return ("size-4-medium", L10n.string("Medium"))
+        case 100_000_000..<(1_000_000_000):
+            return ("size-5-large", L10n.string("Large"))
+        default:
+            return ("size-6-very-large", L10n.string("Very Large"))
         }
     }
 

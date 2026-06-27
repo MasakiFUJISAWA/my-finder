@@ -11,8 +11,108 @@ enum FileSortColumn: String, CaseIterable {
 enum BrowserViewMode: String, CaseIterable, Identifiable {
     case list
     case icons
+    case columns
+    case gallery
 
     var id: String { rawValue }
+}
+
+enum BrowserContentMode: String, CaseIterable, Identifiable {
+    case folder
+    case search
+
+    var id: String { rawValue }
+}
+
+enum FileGroupMode: String, CaseIterable, Identifiable {
+    case none
+    case kind
+    case modifiedDate
+    case size
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .none:
+            return "None"
+        case .kind:
+            return "Kind"
+        case .modifiedDate:
+            return "Date Modified"
+        case .size:
+            return "Size"
+        }
+    }
+}
+
+enum ArchiveFormat: String, CaseIterable, Identifiable {
+    case zip
+    case tar
+    case tarGzip
+    case tarBzip2
+    case tarXz
+
+    var id: String { rawValue }
+
+    var titleKey: String {
+        switch self {
+        case .zip:
+            return "ZIP Archive"
+        case .tar:
+            return "TAR Archive"
+        case .tarGzip:
+            return "TAR.GZ Archive"
+        case .tarBzip2:
+            return "TAR.BZ2 Archive"
+        case .tarXz:
+            return "TAR.XZ Archive"
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .zip:
+            return "zip"
+        case .tar:
+            return "tar"
+        case .tarGzip:
+            return "tar.gz"
+        case .tarBzip2:
+            return "tar.bz2"
+        case .tarXz:
+            return "tar.xz"
+        }
+    }
+
+    var knownExtensions: [String] {
+        switch self {
+        case .zip:
+            return ["zip"]
+        case .tar:
+            return ["tar"]
+        case .tarGzip:
+            return ["tar.gz", "tgz"]
+        case .tarBzip2:
+            return ["tar.bz2", "tbz2", "tbz"]
+        case .tarXz:
+            return ["tar.xz", "txz"]
+        }
+    }
+
+    static func format(for url: URL) -> ArchiveFormat? {
+        let filename = url.lastPathComponent.lowercased()
+
+        return allCases.first { format in
+            format.knownExtensions.contains { filename.hasSuffix(".\($0)") }
+        }
+    }
+}
+
+struct FileItemGroup: Identifiable {
+    let id: String
+    let title: String
+    let items: [FileItem]
 }
 
 enum FileClipboardMode {
@@ -288,6 +388,56 @@ struct ExternalTool: Identifiable, Codable, Hashable {
             bundleIdentifiers: ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"]
         )
     ]
+}
+
+struct LauncherFolderShortcut: Identifiable, Codable, Hashable {
+    var id: UUID
+    var title: String
+    var path: String
+
+    init(id: UUID = UUID(), title: String, path: String) {
+        self.id = id
+        self.title = title
+        self.path = path
+    }
+
+    var url: URL {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+            .standardizedFileURL
+    }
+
+    var normalized: LauncherFolderShortcut {
+        let normalizedURL = url
+        let fallbackTitle = FileManager.default.displayName(atPath: normalizedURL.path).nilIfEmpty
+            ?? normalizedURL.lastPathComponent.nilIfEmpty
+            ?? normalizedURL.path
+        return LauncherFolderShortcut(
+            id: id,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? fallbackTitle,
+            path: normalizedURL.path
+        )
+    }
+}
+
+enum LauncherFolderShortcutStore {
+    private static let defaultsKey = "Mihako.launcherFolderShortcuts"
+
+    static func load() -> [LauncherFolderShortcut] {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let shortcuts = try? JSONDecoder().decode([LauncherFolderShortcut].self, from: data) else {
+            return []
+        }
+
+        return shortcuts.map(\.normalized)
+    }
+
+    static func save(_ shortcuts: [LauncherFolderShortcut]) {
+        guard let data = try? JSONEncoder().encode(shortcuts.map(\.normalized)) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: defaultsKey)
+    }
 }
 
 struct SidebarLocation: Identifiable, Hashable {

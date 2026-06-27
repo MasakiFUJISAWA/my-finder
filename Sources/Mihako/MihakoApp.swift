@@ -71,18 +71,73 @@ final class MihakoApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        let item = NSMenuItem(
+        addDockItem(
             title: L10n.string("New Window"),
             action: #selector(openNewWindowFromDock(_:)),
-            keyEquivalent: ""
+            to: menu
         )
-        item.target = self
-        menu.addItem(item)
+
+        menu.addItem(.separator())
+
+        addDockFolderItem(
+            title: L10n.string("New Window (Desktop)"),
+            url: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true),
+            to: menu
+        )
+        addDockFolderItem(
+            title: L10n.string("New Window (Downloads)"),
+            url: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true),
+            to: menu
+        )
+
+        let shortcuts = LauncherFolderShortcutStore.load()
+
+        if !shortcuts.isEmpty {
+            menu.addItem(.separator())
+
+            for shortcut in shortcuts {
+                addDockFolderItem(
+                    title: shortcut.title,
+                    url: shortcut.url,
+                    to: menu
+                )
+            }
+        }
+
         return menu
     }
 
     @objc private func openNewWindowFromDock(_ sender: Any?) {
         Self.openNewWindow?()
+    }
+
+    @objc private func openFolderFromDock(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else {
+            return
+        }
+
+        ExternalOpenRouter.enqueue([url])
+    }
+
+    private func addDockItem(title: String, action: Selector, to menu: NSMenu) {
+        let item = NSMenuItem(
+            title: title,
+            action: action,
+            keyEquivalent: ""
+        )
+        item.target = self
+        menu.addItem(item)
+    }
+
+    private func addDockFolderItem(title: String, url: URL, to menu: NSMenu) {
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(openFolderFromDock(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = url
+        menu.addItem(item)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -196,6 +251,11 @@ struct BrowserCommands: Commands {
         }
 
         CommandGroup(after: .appSettings) {
+            Button(L10n.string("Launcher Folders...")) {
+                browser?.showLauncherFoldersSettings()
+            }
+            .disabled(browser == nil)
+
             Button(L10n.string("External Tools...")) {
                 browser?.showExternalToolsSettings()
             }

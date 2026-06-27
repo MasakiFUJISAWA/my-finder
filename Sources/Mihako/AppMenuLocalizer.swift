@@ -87,6 +87,8 @@ enum AppMenuLocalizer {
 
         "External Tools...": "External Tools...",
         "外部ツール...": "External Tools...",
+        "Launcher Folders...": "Launcher Folders...",
+        "ランチャーフォルダー...": "Launcher Folders...",
         "Language": "Language",
         "言語": "Language",
         "Appearance": "Appearance",
@@ -106,6 +108,10 @@ enum AppMenuLocalizer {
 
         "New Window": "New Window",
         "新規ウィンドウ": "New Window",
+        "New Window (Desktop)": "New Window (Desktop)",
+        "新規ウィンドウ（デスクトップ）": "New Window (Desktop)",
+        "New Window (Downloads)": "New Window (Downloads)",
+        "新規ウィンドウ（ダウンロード）": "New Window (Downloads)",
         "New Folder": "New Folder",
         "新規フォルダ": "New Folder",
         "Open": "Open",

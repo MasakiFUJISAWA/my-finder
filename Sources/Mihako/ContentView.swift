@@ -40,8 +40,12 @@ struct ContentView: View {
 
                 VStack(spacing: 0) {
                     BrowserToolbarView()
-                    Divider()
-                    BreadcrumbBar()
+
+                    if browser.contentMode == .folder {
+                        Divider()
+                        BreadcrumbBar()
+                    }
+
                     Divider()
                     FileActionBarView()
                     Divider()
@@ -70,6 +74,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $browser.isExternalToolsSettingsPresented) {
             ExternalToolsSettingsSheet()
+                .environmentObject(browser)
+        }
+        .sheet(isPresented: $browser.isLauncherFoldersSettingsPresented) {
+            LauncherFoldersSettingsSheet()
                 .environmentObject(browser)
         }
         .sheet(item: $browser.renameRequest) { request in
@@ -529,56 +537,106 @@ struct BrowserToolbarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ToolbarIconButton(systemImageName: "chevron.left", help: "Back") {
-                browser.goBack()
+            Picker(L10n.string("Content mode"), selection: $browser.contentMode) {
+                Image(systemName: "folder")
+                    .tag(BrowserContentMode.folder)
+
+                Image(systemName: "magnifyingglass")
+                    .tag(BrowserContentMode.search)
             }
-            .disabled(!browser.canGoBack)
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 88)
+            .help(L10n.string("Folder or search results"))
 
-            ToolbarIconButton(systemImageName: "chevron.right", help: "Forward") {
-                browser.goForward()
-            }
-            .disabled(!browser.canGoForward)
-
-            ToolbarIconButton(systemImageName: "arrow.up", help: "Up") {
-                browser.goUp()
-            }
-            .disabled(!browser.canGoUp)
-
-            ToolbarIconButton(systemImageName: "arrow.clockwise", help: "Reload") {
-                browser.reload()
-            }
-
-            TextField(L10n.string("Path"), text: $browser.addressText)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: NSFont.systemFontSize, design: .monospaced))
-                .lineLimit(1)
-                .onSubmit {
-                    browser.submitAddress()
-                }
-                .help(L10n.string("Path"))
-                .frame(maxWidth: .infinity)
-                .frame(height: 24)
-                .layoutPriority(1)
-
-            Button {
-                browser.submitAddress()
-            } label: {
-                Image(systemName: "arrow.right.circle")
-            }
-            .help(L10n.string("Go"))
-
-            Toggle(isOn: $browser.showHiddenFiles) {
-                Image(systemName: browser.showHiddenFiles ? "eye" : "eye.slash")
-            }
-            .toggleStyle(.button)
-            .help(L10n.string("Show hidden files"))
-
-            ToolbarIconButton(systemImageName: "folder.badge.plus", help: "New Folder") {
-                browser.createFolder()
+            if browser.contentMode == .folder {
+                FolderToolbarControls()
+            } else {
+                SearchToolbarControls()
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+struct FolderToolbarControls: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        ToolbarIconButton(systemImageName: "chevron.left", help: "Back") {
+            browser.goBack()
+        }
+        .disabled(!browser.canGoBack)
+
+        ToolbarIconButton(systemImageName: "chevron.right", help: "Forward") {
+            browser.goForward()
+        }
+        .disabled(!browser.canGoForward)
+
+        ToolbarIconButton(systemImageName: "arrow.up", help: "Up") {
+            browser.goUp()
+        }
+        .disabled(!browser.canGoUp)
+
+        ToolbarIconButton(systemImageName: "arrow.clockwise", help: "Reload") {
+            browser.reload()
+        }
+
+        TextField(L10n.string("Path"), text: $browser.addressText)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: NSFont.systemFontSize, design: .monospaced))
+            .lineLimit(1)
+            .onSubmit {
+                browser.submitAddress()
+            }
+            .help(L10n.string("Path"))
+            .frame(maxWidth: .infinity)
+            .frame(height: 24)
+            .layoutPriority(1)
+
+        Button {
+            browser.submitAddress()
+        } label: {
+            Image(systemName: "arrow.right.circle")
+        }
+        .help(L10n.string("Go"))
+
+        Toggle(isOn: $browser.showHiddenFiles) {
+            Image(systemName: browser.showHiddenFiles ? "eye" : "eye.slash")
+        }
+        .toggleStyle(.button)
+        .help(L10n.string("Show hidden files"))
+    }
+}
+
+struct SearchToolbarControls: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        TextField(L10n.string("Search"), text: $browser.searchText)
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1)
+            .onSubmit {
+                browser.performSearch()
+            }
+            .help(L10n.string("Search in current folder"))
+            .frame(maxWidth: .infinity)
+            .frame(height: 24)
+            .layoutPriority(1)
+
+        Button {
+            browser.performSearch()
+        } label: {
+            Image(systemName: "magnifyingglass.circle")
+        }
+        .disabled(browser.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || browser.isSearching)
+        .help(L10n.string("Search"))
+
+        if browser.isSearching {
+            ProgressView()
+                .controlSize(.small)
+        }
     }
 }
 
@@ -644,19 +702,22 @@ struct FileActionBarView: View {
 
                 Image(systemName: "square.grid.2x2")
                     .tag(BrowserViewMode.icons)
+
+                Image(systemName: "rectangle.split.3x1")
+                    .tag(BrowserViewMode.columns)
+
+                Image(systemName: "rectangle.on.rectangle")
+                    .tag(BrowserViewMode.gallery)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 92)
+            .frame(width: 184)
             .help(L10n.string("View mode"))
+
+            FileGroupMenuButton()
 
             Divider()
                 .frame(height: 22)
-
-            ToolbarIconButton(systemImageName: "arrow.up", help: "Up") {
-                browser.goUp()
-            }
-            .disabled(!browser.canGoUp)
 
             ToolbarIconButton(systemImageName: "folder.badge.plus", help: "New Folder") {
                 browser.createFolder()
@@ -699,6 +760,41 @@ struct FileActionBarView: View {
     }
 }
 
+struct FileGroupMenuButton: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        Menu {
+            ForEach(FileGroupMode.allCases) { mode in
+                Button {
+                    browser.groupMode = mode
+                } label: {
+                    HStack {
+                        Text(L10n.string(mode.titleKey))
+
+                        if browser.groupMode == mode {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: browser.groupMode == .none ? "square.grid.3x3" : "square.grid.3x3.fill")
+                .frame(width: 18, height: 18)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .help(groupHelpText)
+    }
+
+    private var groupHelpText: String {
+        browser.groupMode == .none
+            ? L10n.string("Group")
+            : String(format: L10n.string("Grouped by %@"), L10n.string(browser.groupMode.titleKey))
+    }
+}
+
 struct ExternalToolToolbarButton: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
@@ -733,6 +829,203 @@ struct ExternalToolIconView: View {
         } else {
             Image(systemName: tool.systemImageName)
                 .frame(width: size, height: size)
+        }
+    }
+}
+
+struct LauncherFoldersSettingsSheet: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var shortcuts: [LauncherFolderShortcut] = []
+    @State private var selectedShortcutID: UUID?
+
+    private var selectedIndex: Int? {
+        guard let selectedShortcutID else {
+            return nil
+        }
+
+        return shortcuts.firstIndex { $0.id == selectedShortcutID }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.string("Launcher Folders"))
+                .font(.title3.weight(.semibold))
+
+            HStack(alignment: .top, spacing: 14) {
+                VStack(spacing: 8) {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(shortcuts) { shortcut in
+                                Button {
+                                    selectedShortcutID = shortcut.id
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "folder")
+                                            .frame(width: 18, height: 18)
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(shortcut.title)
+                                                .lineLimit(1)
+
+                                            Text(shortcut.path)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(selectedShortcutID == shortcut.id ? Color.accentColor.opacity(0.18) : Color.clear)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(width: 260, height: 280)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+
+                    HStack(spacing: 6) {
+                        ToolbarIconButton(systemImageName: "plus", help: "Add Folder Shortcut") {
+                            addFolderShortcut()
+                        }
+
+                        ToolbarIconButton(systemImageName: "arrow.up", help: "Move Up") {
+                            moveSelectedShortcut(offset: -1)
+                        }
+                        .disabled(selectedIndex == nil || selectedIndex == 0)
+
+                        ToolbarIconButton(systemImageName: "arrow.down", help: "Move Down") {
+                            moveSelectedShortcut(offset: 1)
+                        }
+                        .disabled(selectedIndex == nil || selectedIndex == shortcuts.count - 1)
+
+                        ToolbarIconButton(systemImageName: "trash", help: "Delete Shortcut") {
+                            deleteSelectedShortcut()
+                        }
+                        .disabled(selectedIndex == nil)
+                    }
+                }
+
+                Divider()
+                    .frame(height: 325)
+
+                if let selectedIndex {
+                    LauncherFolderShortcutEditorView(shortcut: $shortcuts[selectedIndex])
+                        .frame(width: 390, alignment: .topLeading)
+                } else {
+                    Text(L10n.string("Select a folder shortcut to edit."))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 390, height: 280, alignment: .center)
+                }
+            }
+
+            HStack {
+                Spacer()
+
+                Button(L10n.string("Cancel")) {
+                    dismiss()
+                }
+
+                Button(L10n.string("Save")) {
+                    browser.saveLauncherFolderShortcuts(shortcuts)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 720)
+        .onAppear {
+            shortcuts = browser.launcherFolderShortcuts
+            selectedShortcutID = shortcuts.first?.id
+        }
+    }
+
+    private func addFolderShortcut() {
+        let folderURL = FileManager.default.homeDirectoryForCurrentUser
+        let shortcut = LauncherFolderShortcut(
+            title: L10n.string("New Folder Shortcut"),
+            path: folderURL.path
+        )
+        shortcuts.append(shortcut)
+        selectedShortcutID = shortcut.id
+    }
+
+    private func deleteSelectedShortcut() {
+        guard let selectedIndex else {
+            return
+        }
+
+        shortcuts.remove(at: selectedIndex)
+        selectedShortcutID = shortcuts.indices.contains(selectedIndex)
+            ? shortcuts[selectedIndex].id
+            : shortcuts.last?.id
+    }
+
+    private func moveSelectedShortcut(offset: Int) {
+        guard let selectedIndex else {
+            return
+        }
+
+        let destinationIndex = selectedIndex + offset
+        guard shortcuts.indices.contains(destinationIndex) else {
+            return
+        }
+
+        shortcuts.swapAt(selectedIndex, destinationIndex)
+    }
+}
+
+struct LauncherFolderShortcutEditorView: View {
+    @Binding var shortcut: LauncherFolderShortcut
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LabeledContent(L10n.string("Name")) {
+                TextField(L10n.string("Name"), text: $shortcut.title)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledContent(L10n.string("Folder path")) {
+                TextField("/Users/name/Folder", text: $shortcut.path)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Button(L10n.string("Choose Folder...")) {
+                chooseFolder()
+            }
+        }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+
+        if FileManager.default.fileExists(atPath: shortcut.path) {
+            panel.directoryURL = URL(fileURLWithPath: shortcut.path, isDirectory: true)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        shortcut.path = url.standardizedFileURL.path
+
+        if shortcut.title == L10n.string("New Folder Shortcut")
+            || shortcut.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            shortcut.title = FileManager.default.displayName(atPath: url.path).nilIfEmpty
+                ?? url.lastPathComponent
         }
     }
 }
@@ -1066,9 +1359,9 @@ struct FileListView: View {
                 FileHeaderRow()
             }
 
-            if browser.items.isEmpty {
+            if browser.displayedItems.isEmpty {
                 Spacer()
-                Text(L10n.string("Empty Folder"))
+                Text(browser.emptyListMessage)
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
@@ -1077,6 +1370,10 @@ struct FileListView: View {
                     FileListRowsView()
                 case .icons:
                     FileIconGridView()
+                case .columns:
+                    FileColumnBrowserView()
+                case .gallery:
+                    FileGalleryView()
                 }
             }
         }
@@ -1102,8 +1399,15 @@ struct FileListRowsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(browser.items) { item in
-                    FileListRowContainer(item: item)
+                ForEach(browser.groupedItems) { group in
+                    if browser.groupMode != .none {
+                        FileGroupHeader(title: group.title)
+                            .padding(.horizontal, 14)
+                    }
+
+                    ForEach(group.items) { item in
+                        FileListRowContainer(item: item)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1160,35 +1464,487 @@ struct FileIconGridView: View {
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                ForEach(browser.items) { item in
-                    FileIconCell(item: item)
-                        .contextMenu {
-                            FileContextMenu(item: item)
-                        }
-                        .simultaneousGesture(TapGesture(count: 1).onEnded {
-                            browser.select(item)
-                        })
-                        .simultaneousGesture(TapGesture(count: 2).onEnded {
-                            browser.select(item)
-                            browser.open(item)
-                        })
-                        .overlay(FileDragInteractionView(item: item).environmentObject(browser))
-                        .onDrop(
-                            of: MihakoTransferType.urlDropTypeIdentifiers,
-                            isTargeted: nil
-                        ) { providers in
-                            guard item.canNavigateInto else {
-                                return false
-                            }
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(browser.groupedItems) { group in
+                    if browser.groupMode != .none {
+                        FileGroupHeader(title: group.title)
+                            .padding(.horizontal, 12)
+                    }
 
-                            return browser.dropItems(from: providers, into: item.url)
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(group.items) { item in
+                            FileInteractiveItem(item: item) {
+                                FileIconCell(item: item)
+                            }
                         }
+                    }
                 }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+    }
+}
+
+struct FileGroupHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+    }
+}
+
+struct FileInteractiveItem<Content: View>: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let item: FileItem
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .contentShape(Rectangle())
+            .contextMenu {
+                FileContextMenu(item: item)
+            }
+            .simultaneousGesture(TapGesture(count: 1).onEnded {
+                browser.select(item)
+            })
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                browser.select(item)
+                browser.open(item)
+            })
+            .overlay(FileDragInteractionView(item: item).environmentObject(browser))
+            .onDrop(
+                of: MihakoTransferType.urlDropTypeIdentifiers,
+                isTargeted: nil
+            ) { providers in
+                guard item.canNavigateInto else {
+                    return false
+                }
+
+                return browser.dropItems(from: providers, into: item.url)
+            }
+    }
+}
+
+struct FileColumnPane: Identifiable {
+    let id = UUID()
+    var title: String
+    var items: [FileItem] = []
+    var previewItem: FileItem?
+    var isLoading = false
+    var errorMessage: String?
+}
+
+struct FileColumnBrowserView: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    @State private var panes: [FileColumnPane] = []
+    @State private var loadTask: Task<Void, Never>?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 0) {
+                ForEach(Array(panes.enumerated()), id: \.element.id) { index, pane in
+                    FileColumnPaneView(pane: pane) { item in
+                        select(item, inPaneAt: index)
+                    }
+                    .environmentObject(browser)
+
+                    Divider()
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .onAppear {
+            syncRootPane()
+        }
+        .onChange(of: browser.currentURL) { _, _ in
+            syncRootPane()
+        }
+        .onChange(of: browser.displayedItems) { _, _ in
+            updateRootPaneItems()
+        }
+        .onDisappear {
+            loadTask?.cancel()
+        }
+    }
+
+    private func syncRootPane() {
+        loadTask?.cancel()
+        panes = [
+                FileColumnPane(
+                title: rootTitle,
+                items: browser.displayedItems
+            )
+        ]
+    }
+
+    private func updateRootPaneItems() {
+        if panes.isEmpty {
+            syncRootPane()
+        } else {
+            panes[0].title = rootTitle
+            panes[0].items = browser.displayedItems
+        }
+    }
+
+    private func select(_ item: FileItem, inPaneAt index: Int) {
+        browser.select(item)
+        loadTask?.cancel()
+
+        panes = Array(panes.prefix(index + 1))
+
+        if item.canNavigateInto {
+            let loadingPane = FileColumnPane(
+                title: item.displayName,
+                isLoading: true
+            )
+            panes.append(loadingPane)
+            let loadingPaneID = loadingPane.id
+
+            loadTask = Task { @MainActor in
+                do {
+                    let childItems = try await browser.itemsForDisplay(at: item.url)
+
+                    guard !Task.isCancelled,
+                          let paneIndex = panes.firstIndex(where: { $0.id == loadingPaneID }) else {
+                        return
+                    }
+
+                    panes[paneIndex] = FileColumnPane(
+                        title: item.displayName,
+                        items: childItems
+                    )
+                } catch {
+                    guard !Task.isCancelled,
+                          let paneIndex = panes.firstIndex(where: { $0.id == loadingPaneID }) else {
+                        return
+                    }
+
+                    panes[paneIndex] = FileColumnPane(
+                        title: item.displayName,
+                        errorMessage: error.localizedDescription
+                    )
+                }
+            }
+        } else {
+            panes.append(
+                FileColumnPane(
+                    title: item.displayName,
+                    previewItem: item
+                )
+            )
+        }
+    }
+
+    private func title(for url: URL) -> String {
+        if SFTPClient.isSFTPURL(url) {
+            let path = SFTPClient.remotePath(for: url)
+            return path == "/" ? (url.host(percentEncoded: false) ?? "SFTP") : URL(fileURLWithPath: path).lastPathComponent
+        }
+
+        if S3Client.isS3URL(url) {
+            let prefix = S3Client.prefix(for: url).withoutTrailingSlashes
+            return prefix.isEmpty ? (url.host(percentEncoded: false) ?? "S3") : URL(fileURLWithPath: prefix).lastPathComponent
+        }
+
+        let displayName = FileManager.default.displayName(atPath: url.path)
+        return displayName.isEmpty ? url.path : displayName
+    }
+
+    private var rootTitle: String {
+        browser.contentMode == .search
+            ? L10n.string("Search Results")
+            : title(for: browser.currentURL)
+    }
+}
+
+struct FileColumnPaneView: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let pane: FileColumnPane
+    let onSelect: (FileItem) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(pane.title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(Color(nsColor: .windowBackgroundColor))
+
+            if pane.isLoading {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Spacer()
+            } else if let errorMessage = pane.errorMessage {
+                Spacer()
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(16)
+                Spacer()
+            } else if let item = pane.previewItem {
+                FileGalleryPreviewPane(item: item, compact: true)
+                    .padding(12)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(browser.groupedItems(for: pane.items)) { group in
+                            if browser.groupMode != .none {
+                                FileGroupHeader(title: group.title)
+                                    .padding(.horizontal, 10)
+                            }
+
+                            ForEach(group.items) { item in
+                                FileColumnRow(item: item, onSelect: onSelect)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+        .frame(width: 280)
+        .frame(maxHeight: .infinity)
+    }
+}
+
+struct FileColumnRow: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let item: FileItem
+    let onSelect: (FileItem) -> Void
+
+    private var isSelected: Bool {
+        browser.selectedIDs.contains(item.url)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            FileSystemIcon(item: item, size: 20)
+
+            Text(item.displayName)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+
+            if item.canNavigateInto {
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+        .contentShape(Rectangle())
+        .contextMenu {
+            FileContextMenu(item: item)
+        }
+        .simultaneousGesture(TapGesture(count: 1).onEnded {
+            onSelect(item)
+        })
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            browser.select(item)
+            browser.open(item)
+        })
+        .overlay(FileDragInteractionView(item: item).environmentObject(browser))
+        .onDrop(
+            of: MihakoTransferType.urlDropTypeIdentifiers,
+            isTargeted: nil
+        ) { providers in
+            guard item.canNavigateInto else {
+                return false
+            }
+
+            return browser.dropItems(from: providers, into: item.url)
+        }
+    }
+}
+
+struct FileGalleryView: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    private var previewItem: FileItem {
+        browser.selectedItems.last ?? browser.displayedItems[0]
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            FileGalleryPreviewPane(item: previewItem, compact: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(18)
+
+            Divider()
+
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(browser.groupedItems) { group in
+                        VStack(alignment: .leading, spacing: 8) {
+                            if browser.groupMode != .none {
+                                Text(group.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .textCase(.uppercase)
+                                    .padding(.leading, 4)
+                            }
+
+                            HStack(spacing: 10) {
+                                ForEach(group.items) { item in
+                                    FileInteractiveItem(item: item) {
+                                        FileGalleryThumbnailCell(item: item)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            .frame(height: browser.groupMode == .none ? 112 : 134)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+}
+
+struct FileGalleryPreviewPane: View {
+    let item: FileItem
+    let compact: Bool
+
+    var body: some View {
+        VStack(spacing: compact ? 12 : 18) {
+            FilePreviewVisual(item: item, compact: compact)
+
+            VStack(spacing: 6) {
+                Text(item.displayName)
+                    .font(compact ? .headline : .title2.weight(.semibold))
+                    .lineLimit(compact ? 2 : 3)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+
+                VStack(spacing: 4) {
+                    if !item.formattedModifiedAt.isEmpty {
+                        FilePreviewMetadataRow(title: "Modified", value: item.formattedModifiedAt)
+                    }
+
+                    if !item.formattedSize.isEmpty {
+                        FilePreviewMetadataRow(title: "Size", value: item.formattedSize)
+                    }
+
+                    FilePreviewMetadataRow(title: "Kind", value: L10n.string(item.kind))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: compact ? 220 : 420)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct FilePreviewVisual: View {
+    let item: FileItem
+    let compact: Bool
+
+    private var previewImage: NSImage? {
+        guard !SFTPClient.isSFTPURL(item.url),
+              !S3Client.isS3URL(item.url),
+              !item.isDirectory,
+              let type = UTType(filenameExtension: item.url.pathExtension),
+              type.conforms(to: .image) else {
+            return nil
+        }
+
+        return NSImage(contentsOf: item.url)
+    }
+
+    var body: some View {
+        if let previewImage {
+            Image(nsImage: previewImage)
+                .resizable()
+                .scaledToFit()
+                .frame(
+                    maxWidth: compact ? 190 : 420,
+                    maxHeight: compact ? 160 : 280
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            FileSystemIcon(item: item, size: compact ? 82 : 128)
+                .frame(
+                    width: compact ? 110 : 170,
+                    height: compact ? 110 : 170
+                )
+        }
+    }
+}
+
+struct FilePreviewMetadataRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(L10n.string(title))
+                .frame(width: 68, alignment: .trailing)
+
+            Text(value)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct FileGalleryThumbnailCell: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let item: FileItem
+
+    private var isSelected: Bool {
+        browser.selectedIDs.contains(item.url)
+    }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            FileSystemIcon(item: item, size: 34)
+                .frame(width: 40, height: 34)
+
+            Text(item.displayName)
+                .font(.system(size: 11))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .truncationMode(.middle)
+                .frame(width: 82, height: 30, alignment: .top)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 7)
+        .frame(width: 92, height: 86)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? Color.accentColor.opacity(0.55) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
     }
 }
 
@@ -1445,6 +2201,12 @@ struct FileContextMenu: View {
             browser.open(item)
         }
 
+        if item.isPackage && !SFTPClient.isSFTPURL(item.url) && !S3Client.isS3URL(item.url) {
+            Button(L10n.string("Show Package Contents")) {
+                browser.showPackageContents(item)
+            }
+        }
+
         Divider()
 
         Button(L10n.string("Rename")) {
@@ -1454,6 +2216,20 @@ struct FileContextMenu: View {
         Button(L10n.string("Duplicate")) {
             browser.duplicate(item)
         }
+
+        Menu(L10n.string("Compress")) {
+            ForEach(ArchiveFormat.allCases) { format in
+                Button(L10n.string(format.titleKey)) {
+                    browser.compress(item, as: format)
+                }
+            }
+        }
+        .disabled(!browser.canCompress(item))
+
+        Button(L10n.string("Extract")) {
+            browser.extract(item)
+        }
+        .disabled(!browser.canExtract(item))
 
         Divider()
 
@@ -1697,7 +2473,7 @@ struct StatusBarView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(L10n.format("items.count", browser.items.count))
+            Text(L10n.format("items.count", browser.displayedItems.count))
 
             if !browser.selectedIDs.isEmpty {
                 Text(L10n.format("items.selected", browser.selectedIDs.count))
@@ -1772,5 +2548,17 @@ struct RenameSheet: View {
         .onAppear {
             isFocused = true
         }
+    }
+}
+
+private extension String {
+    var withoutTrailingSlashes: String {
+        var result = self
+
+        while result.hasSuffix("/") {
+            result.removeLast()
+        }
+
+        return result
     }
 }
