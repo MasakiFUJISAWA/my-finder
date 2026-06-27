@@ -27,6 +27,7 @@ final class FileBrowserViewModel: ObservableObject {
     @Published var gitOperationResult: GitOperationResult?
     @Published private(set) var gitRepositoryInfo: GitRepositoryInfo?
     @Published private(set) var gitStatusByPath: [String: GitFileStatus] = [:]
+    @Published private var cloudStatusRefreshToken = UUID()
     @Published private(set) var pendingClipboardOperation: FileClipboardOperation?
     @Published private(set) var sidebarSections: [SidebarSection] = []
     @Published var viewMode: BrowserViewMode = .list
@@ -93,6 +94,9 @@ final class FileBrowserViewModel: ObservableObject {
     private var gitRepositoryInfoTask: Task<Void, Never>?
     private var gitRemoteTrackingTask: Task<Void, Never>?
     private var gitStatusTask: Task<Void, Never>?
+    private var cloudStatusMonitorTask: Task<Void, Never>?
+    private var cloudStatusOverrides: [URL: CloudFileStatus] = [:]
+    private var cloudStatusOverrideDates: [URL: Date] = [:]
 
     private enum TerminalApp {
         case terminal
@@ -147,6 +151,7 @@ final class FileBrowserViewModel: ObservableObject {
         gitRepositoryInfoTask?.cancel()
         gitRemoteTrackingTask?.cancel()
         gitStatusTask?.cancel()
+        cloudStatusMonitorTask?.cancel()
     }
 
     var canGoBack: Bool {
@@ -282,6 +287,12 @@ final class FileBrowserViewModel: ObservableObject {
             return nil
         }
 
+        _ = cloudStatusRefreshToken
+
+        if let override = cloudStatusOverrides[item.url] {
+            return override
+        }
+
         return CloudFileStatusDetector.status(for: item.url) ?? .unknown
     }
 
@@ -298,7 +309,8 @@ final class FileBrowserViewModel: ObservableObject {
             return nil
         }
 
-        if let exactStatus = gitStatusByPath[relativePath] ?? gitStatusByPath["\(relativePath)/"] {
+        if let exactStatus = gitStatusByPath[relativePath] ?? gitStatusByPath["\(relativePath)/"],
+           !(item.isDirectory && exactStatus == .ignored) {
             return exactStatus
         }
 
@@ -310,6 +322,7 @@ final class FileBrowserViewModel: ObservableObject {
         let descendantStatuses = gitStatusByPath
             .filter { $0.key.hasPrefix(prefix) }
             .map(\.value)
+            .filter { $0 != .ignored }
 
         return descendantStatuses.sorted(by: gitStatusPriority(_:_:)).first
     }
@@ -460,16 +473,94 @@ final class FileBrowserViewModel: ObservableObject {
         }
     }
 
+    private func restartCloudStatusMonitor() {
+        cloudStatusMonitorTask?.cancel()
+
+        guard shouldShowCloudStatusColumn else {
+            cloudStatusOverrides.removeAll()
+            cloudStatusOverrideDates.removeAll()
+            cloudStatusRefreshToken = UUID()
+            return
+        }
+
+        cloudStatusMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2 * 1_000_000_000)
+
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    guard self.shouldShowCloudStatusColumn else {
+                        self.cloudStatusMonitorTask?.cancel()
+                        self.cloudStatusOverrides.removeAll()
+                        self.cloudStatusOverrideDates.removeAll()
+                        self.cloudStatusRefreshToken = UUID()
+                        return
+                    }
+
+                    self.reconcileCloudStatusOverrides()
+                    self.cloudStatusRefreshToken = UUID()
+                }
+            }
+        }
+    }
+
+    private func reconcileCloudStatusOverrides() {
+        let now = Date()
+
+        for (url, override) in cloudStatusOverrides {
+            let detectedStatus = CloudFileStatusDetector.status(for: url)
+
+            if let detectedStatus,
+               detectedStatus != .cloudOnly,
+               detectedStatus != .unknown {
+                cloudStatusOverrides.removeValue(forKey: url)
+                cloudStatusOverrideDates.removeValue(forKey: url)
+                continue
+            }
+
+            let startedAt = cloudStatusOverrideDates[url] ?? now
+
+            if override == .syncing,
+               now.timeIntervalSince(startedAt) > 90 {
+                cloudStatusOverrides.removeValue(forKey: url)
+                cloudStatusOverrideDates.removeValue(forKey: url)
+            }
+        }
+    }
+
+    private func markCloudItemOpening(_ url: URL) {
+        guard CloudFileStatusDetector.isCloudManaged(url) else {
+            return
+        }
+
+        let status = CloudFileStatusDetector.status(for: url)
+
+        guard status == .cloudOnly || status == .unknown else {
+            return
+        }
+
+        cloudStatusOverrides[url] = .syncing
+        cloudStatusOverrideDates[url] = Date()
+        cloudStatusRefreshToken = UUID()
+        try? fileManager.startDownloadingUbiquitousItem(at: url)
+        restartCloudStatusMonitor()
+    }
+
     func reload() {
         refreshSidebarLocations()
         refreshGitRepositoryInfo()
 
         if isCurrentSFTP {
+            restartCloudStatusMonitor()
             reloadSFTPDirectory()
             return
         }
 
         if isCurrentS3 {
+            restartCloudStatusMonitor()
             reloadS3Directory()
             return
         }
@@ -489,11 +580,14 @@ final class FileBrowserViewModel: ObservableObject {
             if let selectionFocusURL, !items.contains(where: { $0.url == selectionFocusURL }) {
                 self.selectionFocusURL = firstSelectedURLInDisplayOrder()
             }
+
+            restartCloudStatusMonitor()
         } catch {
             items = []
             selectedIDs.removeAll()
             selectionAnchorURL = nil
             selectionFocusURL = nil
+            restartCloudStatusMonitor()
             presentError(error, action: "Read folder")
         }
     }
@@ -1263,6 +1357,7 @@ final class FileBrowserViewModel: ObservableObject {
         } else if S3Client.isS3URL(item.url) {
             downloadAndOpenS3(item.url)
         } else {
+            markCloudItemOpening(item.url)
             NSWorkspace.shared.open(item.url)
         }
     }

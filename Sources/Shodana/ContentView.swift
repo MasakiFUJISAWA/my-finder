@@ -2591,8 +2591,8 @@ struct FileSystemIcon: View {
 private enum FileListLayout {
     static let rowHorizontalPadding: CGFloat = 14
     static let columnHorizontalPadding: CGFloat = 6
-    static let gitStatusColumnWidth: CGFloat = 116
-    static let cloudStatusColumnWidth: CGFloat = 116
+    static let gitStatusColumnWidth: CGFloat = 58
+    static let cloudStatusColumnWidth: CGFloat = 66
     static let modifiedColumnWidth: CGFloat = 180
     static let sizeColumnWidth: CGFloat = 110
     static let kindColumnWidth: CGFloat = 170
@@ -2719,14 +2719,7 @@ struct GitStatusCell: View {
 
     var body: some View {
         if let status {
-            HStack(spacing: 5) {
-                GitStatusBadge(status: status)
-
-                Text(L10n.string(status.titleKey))
-                    .font(.caption2)
-                    .foregroundStyle(status.listColor)
-                    .lineLimit(1)
-            }
+            GitStatusBadge(status: status)
         } else {
             Text("")
         }
@@ -2755,14 +2748,7 @@ struct CloudStatusCell: View {
 
     var body: some View {
         if let status {
-            HStack(spacing: 5) {
-                CloudStatusBadge(status: status)
-
-                Text(L10n.string(status.titleKey))
-                    .font(.caption2)
-                    .foregroundStyle(status.listColor)
-                    .lineLimit(1)
-            }
+            CloudStatusBadge(status: status)
         } else {
             Text("")
         }
