@@ -1614,11 +1614,14 @@ struct AISearchWorkspaceView: View {
                     } else {
                         ForEach(browser.aiChatMessages) { message in
                             AIChatMessageBubble(message: message)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
             }
+            .frame(maxWidth: .infinity)
 
             Divider()
 
@@ -1705,31 +1708,34 @@ struct AIChatMessageBubble: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if isUserMessage {
-                Spacer(minLength: 120)
+                Spacer(minLength: 96)
             }
 
             bubble
                 .frame(
-                    maxWidth: isUserMessage ? 520 : .infinity,
+                    maxWidth: isUserMessage ? 560 : .infinity,
                     alignment: .leading
                 )
 
             if !isUserMessage {
-                Spacer(minLength: 96)
+                Spacer(minLength: 64)
             }
         }
         .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
     }
 
     private var bubble: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: isUserMessage ? .trailing : .leading, spacing: 6) {
             Text(L10n.string(message.role.titleKey))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
 
             Text(message.content)
                 .textSelection(.enabled)
                 .font(.system(size: 13))
+                .multilineTextAlignment(isUserMessage ? .trailing : .leading)
+                .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
         }
         .padding(10)
         .background(

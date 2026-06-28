@@ -564,10 +564,25 @@ enum AISearchContextBuilder {
         }
 
         let lowercasedPath = relativePath.lowercased()
+        let filename = (lowercasedPath as NSString).lastPathComponent
+        let filenameStem = (filename as NSString).deletingPathExtension
+        let filenameExtension = (filename as NSString).pathExtension
         let tokens = pathTokens(from: lowercasedPath)
         var score = 0
 
         for term in queryTerms {
+            if filename == term {
+                score += 60
+            }
+
+            if filenameStem == term {
+                score += 46
+            }
+
+            if filenameExtension == term {
+                score += 42
+            }
+
             if lowercasedPath.contains(term) {
                 score += 12
             } else if tokens.contains(where: { isFuzzyMatch(term, candidate: $0) }) {
