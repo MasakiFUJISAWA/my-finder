@@ -261,6 +261,11 @@ struct BrowserCommands: Commands {
             }
             .disabled(browser == nil)
 
+            Button(L10n.string("AI Search Settings...")) {
+                browser?.showAISearchSettings()
+            }
+            .disabled(browser == nil)
+
             Divider()
 
             Menu(L10n.string("Appearance")) {

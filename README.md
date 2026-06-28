@@ -43,6 +43,7 @@ Shodana は、次のような作業を一つのワークスペースにまとめ
 - デュアルペインで2つのフォルダを並べて表示
 - 通常のフォルダ表示と検索結果表示の切り替え
 - 検索対象パスを指定した検索、Spotlight (`mdfind`) 利用、検索中断
+- AI Search: 許可したスコープ内の候補ファイルだけをAIに開示して、ファイル検索や内容相談
 - パンくずリストで上位階層へ移動
 - 戻る、進む、上の階層へ移動
 - 一覧表示、アイコン表示、カラム表示、ギャラリー表示の切り替え
@@ -130,6 +131,7 @@ Shodana は開発中のアプリです。以前の Priority 1 として挙げて
 - Clone Repository 強化: clone 後の自動オープン、履歴、よく使うホスト補完
 - Cloud Status 強化: OneDrive、SharePoint、Google Drive、iCloud Drive のプロバイダ別メタデータ対応精度向上
 - Folder Compare / Sync 強化: 競合解決UI、キャッシュ、詳細進捗、バックグラウンドジョブ化
+- AI Search 強化: 複数プロバイダーのプリセット、SFTP/S3の直接コンテキスト化、送信前レビューUI
 
 ### Priority 2
 
@@ -148,7 +150,7 @@ Shodana は開発中のアプリです。以前の Priority 1 として挙げて
 - Docker Browser: Container、Volume、Log の閲覧
 - Kubernetes Browser: Namespace、Pod、Log の閲覧
 - AWS Browser: EC2、S3、CloudWatch の横断表示
-- AI Assist: 自然言語検索、Git Commit Message 生成、Shell Command 生成、Rename 提案
+- AI Assist: Git Commit Message 生成、Shell Command 生成、Rename 提案
 
 ## 将来的な製品構成案
 
@@ -260,6 +262,19 @@ cp -R .build/release/Shodana.app /Applications/
 右側の上部にはアドレスバーがあります。ここへ `/Users/yourname/Documents` のようなローカルパス、`sftp://...`、`s3://...` のようなリモートパスを入力して移動できます。
 
 アドレスバー行の左端には、通常のフォルダ表示と検索結果表示を切り替えるボタンがあります。検索結果表示に切り替えると、アドレスバー行には検索対象パス、検索欄、検索ボタンが表示され、パンくずリストは隠れます。ローカルフォルダでは検索対象パス配下を Spotlight (`mdfind`) で検索し、Spotlight が使えない場合は再帰検索に戻ります。SFTP/S3 では検索対象パスの直下一覧から名前で絞り込みます。
+
+検索結果表示の中には `Keyword Search` と `AI Search` の切り替えがあります。`AI Search` では、あらかじめ許可した `AI Scope` の範囲にあるファイルだけを候補として抽出し、OpenAI互換の Chat Completions API に送って内容相談できます。APIキーは macOS Keychain に保存され、`.env`、秘密鍵、`node_modules`、`.git` などはデフォルトで除外されます。
+
+AI Search を使う流れは次の通りです。
+
+1. 検索結果表示に切り替える
+2. `AI Search` を選ぶ
+3. アドレス欄に相談対象のパスを表示する
+4. フォルダ追加ボタン、または `AI Search Settings...` から、そのパスを `AI Scope` に追加する
+5. `AI Search Settings...` で Endpoint、Model、API Key を設定する
+6. 質問欄に「この処理の入口はどこ？」などを入力してAIに質問する
+
+現在の初期実装では、ローカルフォルダ、マウント済みNAS、Google Drive / OneDrive / SharePoint / iCloud Drive などの同期済みフォルダを対象にできます。SFTP/S3の内容を直接AIコンテキスト化する機能は今後の強化対象です。
 
 ファイル一覧の上には操作ボタンがあります。
 

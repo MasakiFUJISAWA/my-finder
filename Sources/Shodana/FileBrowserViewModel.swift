@@ -44,16 +44,27 @@ final class FileBrowserViewModel: ObservableObject {
             if contentMode != .search {
                 searchTask?.cancel()
                 searchTask = nil
+                aiSearchTask?.cancel()
+                aiSearchTask = nil
                 isSearching = false
+                isAIThinking = false
                 wasSearchCancelled = false
             }
         }
     }
+    @Published var searchInteractionMode: SearchInteractionMode = .keyword
     @Published var searchText = ""
     @Published private(set) var searchResults: [FileItem] = []
     @Published private(set) var isSearching = false
     @Published private(set) var hasPerformedSearch = false
     @Published private(set) var wasSearchCancelled = false
+    @Published private(set) var aiSearchSettings: AISearchSettings = .defaultSettings
+    @Published private(set) var aiProviderAPIKey = ""
+    @Published private(set) var aiContextFiles: [AIContextFile] = []
+    @Published private(set) var aiChatMessages: [AIChatMessage] = []
+    @Published private(set) var aiContextSummary = ""
+    @Published private(set) var isAIThinking = false
+    @Published var isAISearchSettingsPresented = false
     @Published private(set) var userFavoriteFolders: [URL] = []
     @Published private(set) var serverConnections: [ServerConnection] = []
     @Published var isConnectServerDialogPresented = false
@@ -91,6 +102,7 @@ final class FileBrowserViewModel: ObservableObject {
     private var sidebarLocationOrderIDs: [String] = []
     private var remoteReloadTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var aiSearchTask: Task<Void, Never>?
     private var gitRepositoryInfoTask: Task<Void, Never>?
     private var gitRemoteTrackingTask: Task<Void, Never>?
     private var gitStatusTask: Task<Void, Never>?
@@ -137,6 +149,8 @@ final class FileBrowserViewModel: ObservableObject {
             legacyDefaultsKeys: legacyExternalToolsDefaultsKeys
         )
         launcherFolderShortcuts = LauncherFolderShortcutStore.load()
+        aiSearchSettings = AISearchSettingsStore.load()
+        aiProviderAPIKey = AIProviderSecretStore.loadAPIKey() ?? ""
         refreshSidebarLocations()
         reload()
         startGitRemoteTrackingMonitor()
@@ -148,6 +162,7 @@ final class FileBrowserViewModel: ObservableObject {
 
     deinit {
         searchTask?.cancel()
+        aiSearchTask?.cancel()
         gitRepositoryInfoTask?.cancel()
         gitRemoteTrackingTask?.cancel()
         gitStatusTask?.cancel()
@@ -690,6 +705,11 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func performSearch() {
+        guard searchInteractionMode == .keyword else {
+            performAISearch()
+            return
+        }
+
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         contentMode = .search
         searchTask?.cancel()
@@ -789,14 +809,240 @@ final class FileBrowserViewModel: ObservableObject {
     }
 
     func cancelSearch() {
-        guard isSearching else {
+        guard isSearching || isAIThinking else {
             return
         }
 
         searchTask?.cancel()
         searchTask = nil
+        aiSearchTask?.cancel()
+        aiSearchTask = nil
         isSearching = false
+        isAIThinking = false
         wasSearchCancelled = true
+    }
+
+    func performAISearch() {
+        let question = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        contentMode = .search
+        searchInteractionMode = .ai
+        aiSearchTask?.cancel()
+        searchTask?.cancel()
+        searchTask = nil
+        isSearching = false
+        wasSearchCancelled = false
+        selectedIDs.removeAll()
+        selectionAnchorURL = nil
+        selectionFocusURL = nil
+
+        guard !question.isEmpty else {
+            isAIThinking = false
+            hasPerformedSearch = false
+            return
+        }
+
+        guard let rootURL = searchRootURLFromAddress() else {
+            isAIThinking = false
+            hasPerformedSearch = false
+            return
+        }
+
+        guard rootURL.isFileURL else {
+            presentMessage("AI Search currently supports local, mounted, and synced cloud folders. Add remote folders after mounting them locally.")
+            isAIThinking = false
+            hasPerformedSearch = false
+            return
+        }
+
+        let scopeURLs = effectiveAIScopeURLs(for: rootURL)
+
+        guard !scopeURLs.isEmpty else {
+            presentMessage("Add this path to AI Scope before using AI Search.")
+            isAIThinking = false
+            hasPerformedSearch = false
+            return
+        }
+
+        let settings = aiSearchSettings.normalized
+        let apiKey = aiProviderAPIKey
+        let previousMessages = aiChatMessages
+
+        hasPerformedSearch = true
+        isAIThinking = true
+        aiContextSummary = L10n.string("Preparing AI context...")
+        aiChatMessages.append(AIChatMessage(role: .user, content: question))
+
+        aiSearchTask = Task { [weak self, settings, apiKey, question, scopeURLs, previousMessages] in
+            do {
+                let contextResult = try await AISearchContextBuilder.collectContext(
+                    question: question,
+                    rootURLs: scopeURLs,
+                    settings: settings
+                )
+                let answer: String
+
+                if apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || settings.endpointURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    answer = Self.unconfiguredAIProviderMessage(contextResult: contextResult)
+                } else {
+                    let messages = AISearchPromptBuilder.messages(
+                        question: question,
+                        contextFiles: contextResult.files,
+                        previousMessages: previousMessages,
+                        settings: settings
+                    )
+                    answer = try await AIChatClient.complete(
+                        settings: settings,
+                        apiKey: apiKey,
+                        messages: messages
+                    )
+                }
+
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.aiContextFiles = contextResult.files
+                    self.aiContextSummary = Self.aiContextSummaryText(contextResult)
+                    self.aiChatMessages.append(AIChatMessage(role: .assistant, content: answer))
+                    self.isAIThinking = false
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.isAIThinking = false
+                    self.wasSearchCancelled = true
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.aiChatMessages.append(
+                        AIChatMessage(
+                            role: .assistant,
+                            content: String(format: L10n.string("AI Search failed: %@"), error.localizedDescription)
+                        )
+                    )
+                    self.aiContextSummary = L10n.string("AI Search failed.")
+                    self.isAIThinking = false
+                }
+            }
+        }
+    }
+
+    func showAISearchSettings() {
+        isAISearchSettingsPresented = true
+    }
+
+    func saveAISearchSettings(_ settings: AISearchSettings, apiKey: String) {
+        aiSearchSettings = settings.normalized
+        AISearchSettingsStore.save(aiSearchSettings)
+        aiProviderAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        AIProviderSecretStore.saveAPIKey(aiProviderAPIKey)
+        isAISearchSettingsPresented = false
+    }
+
+    func addCurrentPathToAIScope() {
+        guard let rootURL = searchRootURLFromAddress(), rootURL.isFileURL else {
+            presentMessage("AI Search scope must be a local, mounted, or synced cloud folder.")
+            return
+        }
+
+        var settings = aiSearchSettings.normalized
+        let path = rootURL.standardizedFileURL.path
+
+        guard !settings.scopes.contains(where: { $0.normalized.path == path }) else {
+            return
+        }
+
+        let title = fileManager.displayName(atPath: path).nilIfEmpty
+            ?? rootURL.lastPathComponent.nilIfEmpty
+            ?? path
+        settings.scopes.append(AIStorageScope(title: title, path: path))
+        aiSearchSettings = settings.normalized
+        AISearchSettingsStore.save(aiSearchSettings)
+    }
+
+    func clearAIConversation() {
+        aiSearchTask?.cancel()
+        aiSearchTask = nil
+        isAIThinking = false
+        aiChatMessages = []
+        aiContextFiles = []
+        aiContextSummary = ""
+    }
+
+    func openAIContextFile(_ file: AIContextFile) {
+        openExternalDestination(file.url)
+    }
+
+    private func effectiveAIScopeURLs(for rootURL: URL) -> [URL] {
+        let root = rootURL.standardizedFileURL
+        let rootPath = root.path.trimmingTrailingSlash
+        var urls: [URL] = []
+        var seenPaths = Set<String>()
+
+        for scope in aiSearchSettings.normalized.scopes {
+            let scopeURL = scope.url
+            let scopePath = scopeURL.path.trimmingTrailingSlash
+            var isDirectory: ObjCBool = false
+
+            guard fileManager.fileExists(atPath: scopeURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                continue
+            }
+
+            let candidateURL: URL?
+
+            if Self.path(rootPath, isInsideOrEqualTo: scopePath) {
+                candidateURL = root
+            } else if Self.path(scopePath, isInsideOrEqualTo: rootPath) {
+                candidateURL = scopeURL
+            } else {
+                candidateURL = nil
+            }
+
+            guard let candidateURL else {
+                continue
+            }
+
+            let candidatePath = candidateURL.path.trimmingTrailingSlash
+            guard seenPaths.insert(candidatePath).inserted else {
+                continue
+            }
+
+            urls.append(candidateURL)
+        }
+
+        return urls
+    }
+
+    private nonisolated static func path(_ path: String, isInsideOrEqualTo parentPath: String) -> Bool {
+        path == parentPath || path.hasPrefix(parentPath + "/")
+    }
+
+    private nonisolated static func unconfiguredAIProviderMessage(contextResult: AIContextBuildResult) -> String {
+        """
+        AI provider is not configured yet.
+
+        Shodana prepared \(contextResult.files.count) context files from the allowed AI scope. Open AI Search Settings and set a Chat Completions endpoint, model, and API key to send this context to your licensed AI provider.
+        """
+    }
+
+    private static func aiContextSummaryText(_ contextResult: AIContextBuildResult) -> String {
+        String(
+            format: L10n.string("AI context: %d files selected, %d scanned, %d skipped"),
+            contextResult.files.count,
+            contextResult.scannedFileCount,
+            contextResult.skippedFileCount
+        )
     }
 
     private func searchRootURLFromAddress() -> URL? {
@@ -4811,11 +5057,21 @@ final class FileBrowserViewModel: ObservableObject {
 
         switch terminalApp {
         case .terminal:
+            let scriptURL: URL
+
+            do {
+                scriptURL = try terminalLaunchScriptURL(for: command)
+            } catch {
+                presentError(error, action: "Open in Terminal")
+                return
+            }
+
+            let escapedScriptPath = appleScriptEscaped(scriptURL.path)
             runAppleScript(
                 """
                 tell application "Terminal"
                     activate
-                    do script "\(escapedCommand)"
+                    open POSIX file "\(escapedScriptPath)"
                 end tell
                 """,
                 action: "Open in Terminal",
@@ -4831,15 +5087,53 @@ final class FileBrowserViewModel: ObservableObject {
                 """
                 tell application "iTerm"
                     activate
-                    create window with default profile
-                    tell current session of current window
-                        write text "\(escapedCommand)"
-                    end tell
+                    create window with default profile command "\(escapedCommand)"
                 end tell
                 """,
                 action: "Open in iTerm",
                 automationTarget: "iTerm"
             )
+        }
+    }
+
+    private func terminalLaunchScriptURL(for command: String) throws -> URL {
+        let directoryURL = fileManager.temporaryDirectory
+            .appendingPathComponent("ShodanaTerminal", isDirectory: true)
+
+        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        removeOldTerminalLaunchScripts(in: directoryURL)
+
+        let scriptURL = directoryURL
+            .appendingPathComponent("shodana-\(UUID().uuidString)", isDirectory: false)
+            .appendingPathExtension("command")
+        let script = """
+        #!/bin/zsh
+        \(command)
+        """
+
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private func removeOldTerminalLaunchScripts(in directoryURL: URL) {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        let expirationDate = Date().addingTimeInterval(-24 * 60 * 60)
+
+        for url in urls where url.pathExtension == "command" {
+            let modifiedAt = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate
+
+            if modifiedAt.map({ $0 < expirationDate }) ?? false {
+                try? fileManager.removeItem(at: url)
+            }
         }
     }
 
@@ -4853,7 +5147,7 @@ final class FileBrowserViewModel: ObservableObject {
         }
 
         let directoryURL = directoryURL(for: url)
-        return "cd \(shellQuoted(directoryURL.path))"
+        return "cd \(shellQuoted(directoryURL.path)) && exec ${SHELL:-/bin/zsh} -l"
     }
 
     private func remoteTerminalCommand(for url: URL) throws -> String {

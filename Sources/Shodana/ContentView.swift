@@ -589,7 +589,11 @@ struct BrowserPaneView: View {
             Divider()
             FileActionBarView()
             Divider()
-            FileListView()
+            if browser.contentMode == .search && browser.searchInteractionMode == .ai {
+                AISearchWorkspaceView()
+            } else {
+                FileListView()
+            }
             Divider()
             StatusBarView()
         }
@@ -612,6 +616,10 @@ struct BrowserPresentationModifier: ViewModifier {
             }
             .sheet(isPresented: $browser.isLauncherFoldersSettingsPresented) {
                 LauncherFoldersSettingsSheet()
+                    .environmentObject(browser)
+            }
+            .sheet(isPresented: $browser.isAISearchSettingsPresented) {
+                AISearchSettingsSheet()
                     .environmentObject(browser)
             }
             .sheet(item: $browser.renameRequest) { request in
@@ -1049,6 +1057,292 @@ struct SidebarLocationRow: View {
     }
 }
 
+struct AISearchSettingsSheet: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var settings: AISearchSettings = .defaultSettings
+    @State private var apiKey = ""
+    @State private var selectedScopeID: UUID?
+
+    private var selectedScopeIndex: Int? {
+        guard let selectedScopeID else {
+            return nil
+        }
+
+        return settings.scopes.firstIndex { $0.id == selectedScopeID }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.string("AI Search Settings"))
+                .font(.title3.weight(.semibold))
+
+            HStack(alignment: .top, spacing: 14) {
+                scopeList
+
+                Divider()
+                    .frame(height: 430)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    providerSettings
+
+                    Divider()
+
+                    limitsSettings
+
+                    Divider()
+
+                    excludeSettings
+                }
+                .frame(width: 470, alignment: .topLeading)
+            }
+
+            HStack {
+                Button(L10n.string("Restore Defaults")) {
+                    let scopes = settings.scopes
+                    settings = .defaultSettings
+                    settings.scopes = scopes
+                }
+
+                Spacer()
+
+                Button(L10n.string("Cancel")) {
+                    dismiss()
+                }
+
+                Button(L10n.string("Save")) {
+                    browser.saveAISearchSettings(settings, apiKey: apiKey)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 840)
+        .onAppear {
+            settings = browser.aiSearchSettings
+            apiKey = browser.aiProviderAPIKey
+            selectedScopeID = settings.scopes.first?.id
+        }
+    }
+
+    private var scopeList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.string("Allowed AI Scope"))
+                .font(.headline)
+
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(settings.scopes) { scope in
+                        Button {
+                            selectedScopeID = scope.id
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(scope.title)
+                                    .lineLimit(1)
+
+                                Text(scope.path)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(selectedScopeID == scope.id ? Color.accentColor.opacity(0.18) : Color.clear)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(width: 280, height: 270)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+
+            HStack(spacing: 6) {
+                ToolbarIconButton(systemImageName: "plus", help: "Add Folder") {
+                    addScope()
+                }
+
+                ToolbarIconButton(systemImageName: "arrow.up", help: "Move Up") {
+                    moveSelectedScope(offset: -1)
+                }
+                .disabled(selectedScopeIndex == nil || selectedScopeIndex == 0)
+
+                ToolbarIconButton(systemImageName: "arrow.down", help: "Move Down") {
+                    moveSelectedScope(offset: 1)
+                }
+                .disabled(selectedScopeIndex == nil || selectedScopeIndex == settings.scopes.count - 1)
+
+                ToolbarIconButton(systemImageName: "trash", help: "Delete") {
+                    deleteSelectedScope()
+                }
+                .disabled(selectedScopeIndex == nil)
+            }
+
+            if let selectedScopeIndex {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField(L10n.string("Name"), text: $settings.scopes[selectedScopeIndex].title)
+                        .textFieldStyle(.roundedBorder)
+
+                    TextField(L10n.string("Folder path"), text: $settings.scopes[selectedScopeIndex].path)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button(L10n.string("Choose Folder...")) {
+                        chooseFolder(for: selectedScopeIndex)
+                    }
+                }
+            } else {
+                Text(L10n.string("Add folders that may be disclosed to AI."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var providerSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.string("AI Provider"))
+                .font(.headline)
+
+            LabeledContent(L10n.string("Endpoint")) {
+                TextField("https://api.example.com/v1/chat/completions", text: $settings.endpointURLString)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledContent(L10n.string("Model")) {
+                TextField("model-name", text: $settings.model)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledContent(L10n.string("API Key")) {
+                SecureField("sk-...", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Text(L10n.string("Use an OpenAI-compatible Chat Completions endpoint. The API key is stored in macOS Keychain."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var limitsSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.string("Context Limits"))
+                .font(.headline)
+
+            HStack {
+                LabeledContent(L10n.string("Files")) {
+                    TextField("", value: $settings.maxFiles, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 76)
+                }
+
+                LabeledContent(L10n.string("File bytes")) {
+                    TextField("", value: $settings.maxFileBytes, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 96)
+                }
+
+                LabeledContent(L10n.string("Context chars")) {
+                    TextField("", value: $settings.maxContextCharacters, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 105)
+                }
+            }
+        }
+    }
+
+    private var excludeSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.string("Exclude Patterns"))
+                .font(.headline)
+
+            TextEditor(text: $settings.excludedPatternsText)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(height: 120)
+                .background(Color(nsColor: .textBackgroundColor))
+
+            Text(L10n.string("One pattern per line. Secrets such as .env and key files are excluded by default."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func addScope() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        let normalizedURL = url.standardizedFileURL
+        let scope = AIStorageScope(
+            title: FileManager.default.displayName(atPath: normalizedURL.path).nilIfEmpty
+                ?? normalizedURL.lastPathComponent,
+            path: normalizedURL.path
+        )
+        settings.scopes.append(scope)
+        selectedScopeID = scope.id
+    }
+
+    private func chooseFolder(for index: Int) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+
+        let currentPath = settings.scopes[index].path
+        if FileManager.default.fileExists(atPath: currentPath) {
+            panel.directoryURL = URL(fileURLWithPath: currentPath, isDirectory: true)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        let normalizedURL = url.standardizedFileURL
+        settings.scopes[index].path = normalizedURL.path
+
+        if settings.scopes[index].title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            settings.scopes[index].title = FileManager.default.displayName(atPath: normalizedURL.path).nilIfEmpty
+                ?? normalizedURL.lastPathComponent
+        }
+    }
+
+    private func deleteSelectedScope() {
+        guard let selectedScopeIndex else {
+            return
+        }
+
+        settings.scopes.remove(at: selectedScopeIndex)
+        selectedScopeID = settings.scopes.indices.contains(selectedScopeIndex)
+            ? settings.scopes[selectedScopeIndex].id
+            : settings.scopes.last?.id
+    }
+
+    private func moveSelectedScope(offset: Int) {
+        guard let selectedScopeIndex else {
+            return
+        }
+
+        let destinationIndex = selectedScopeIndex + offset
+        guard settings.scopes.indices.contains(destinationIndex) else {
+            return
+        }
+
+        settings.scopes.swapAt(selectedScopeIndex, destinationIndex)
+    }
+}
+
 struct BrowserToolbarView: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
@@ -1131,6 +1425,18 @@ struct SearchToolbarControls: View {
     @EnvironmentObject private var browser: FileBrowserViewModel
 
     var body: some View {
+        Picker(L10n.string("Search Type"), selection: $browser.searchInteractionMode) {
+            ForEach(SearchInteractionMode.allCases) { mode in
+                Image(systemName: mode.systemImageName)
+                    .tag(mode)
+                    .help(L10n.string(mode.titleKey))
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: 88)
+        .help(L10n.string("Search Type"))
+
         TextField(L10n.string("Path"), text: $browser.addressText)
             .textFieldStyle(.roundedBorder)
             .font(.system(size: NSFont.systemFontSize, design: .monospaced))
@@ -1138,18 +1444,21 @@ struct SearchToolbarControls: View {
             .onSubmit {
                 browser.performSearch()
             }
-            .help(L10n.string("Search Path"))
+            .help(browser.searchInteractionMode == .ai ? L10n.string("AI Search Path") : L10n.string("Search Path"))
             .frame(minWidth: 220, maxWidth: .infinity)
             .frame(height: 24)
             .layoutPriority(1)
 
-        TextField(L10n.string("Search"), text: $browser.searchText)
+        TextField(
+            browser.searchInteractionMode == .ai ? L10n.string("Ask about files") : L10n.string("Search"),
+            text: $browser.searchText
+        )
             .textFieldStyle(.roundedBorder)
             .lineLimit(1)
             .onSubmit {
                 browser.performSearch()
             }
-            .help(L10n.string("Search below path"))
+            .help(browser.searchInteractionMode == .ai ? L10n.string("Ask AI about files below path") : L10n.string("Search below path"))
             .frame(minWidth: 180, maxWidth: .infinity)
             .frame(height: 24)
             .layoutPriority(2)
@@ -1157,12 +1466,22 @@ struct SearchToolbarControls: View {
         Button {
             browser.performSearch()
         } label: {
-            Image(systemName: "magnifyingglass.circle")
+            Image(systemName: browser.searchInteractionMode == .ai ? "sparkles" : "magnifyingglass.circle")
         }
-        .disabled(browser.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || browser.isSearching)
-        .help(L10n.string("Search"))
+        .disabled(browser.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || browser.isSearching || browser.isAIThinking)
+        .help(browser.searchInteractionMode == .ai ? L10n.string("Ask AI") : L10n.string("Search"))
 
-        if browser.isSearching {
+        if browser.searchInteractionMode == .ai {
+            ToolbarIconButton(systemImageName: "folder.badge.gearshape", help: "Add Current Path to AI Scope") {
+                browser.addCurrentPathToAIScope()
+            }
+
+            ToolbarIconButton(systemImageName: "gearshape", help: "AI Search Settings") {
+                browser.showAISearchSettings()
+            }
+        }
+
+        if browser.isSearching || browser.isAIThinking {
             ProgressView()
                 .controlSize(.small)
 
@@ -1186,6 +1505,226 @@ struct ToolbarIconButton: View {
         .buttonStyle(.bordered)
         .controlSize(.regular)
         .help(L10n.string(help))
+    }
+}
+
+struct AISearchWorkspaceView: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            aiContextPane
+                .frame(minWidth: 320, idealWidth: 390, maxWidth: 460)
+
+            Divider()
+
+            aiConversationPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var aiContextPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Label(L10n.string("AI Context"), systemImage: "doc.text.magnifyingglass")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    browser.showAISearchSettings()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.bordered)
+                .help(L10n.string("AI Search Settings"))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            if !browser.aiContextSummary.isEmpty {
+                Text(browser.aiContextSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
+
+            Divider()
+
+            if browser.aiContextFiles.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "folder.badge.questionmark")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+
+                    Text(L10n.string("No AI context files yet."))
+                        .foregroundStyle(.secondary)
+
+                    Button(L10n.string("Add Current Path to AI Scope")) {
+                        browser.addCurrentPathToAIScope()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(20)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(browser.aiContextFiles) { file in
+                            AIContextFileRow(file: file)
+                        }
+                    }
+                    .padding(10)
+                }
+            }
+        }
+    }
+
+    private var aiConversationPane: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label(L10n.string("AI Conversation"), systemImage: "sparkles")
+                    .font(.headline)
+
+                Spacer()
+
+                Button(L10n.string("Clear")) {
+                    browser.clearAIConversation()
+                }
+                .disabled(browser.aiChatMessages.isEmpty && browser.aiContextFiles.isEmpty)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if browser.aiChatMessages.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 28))
+                                .foregroundStyle(.secondary)
+
+                            Text(L10n.string("Ask about files in the allowed AI scope."))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                    } else {
+                        ForEach(browser.aiChatMessages) { message in
+                            AIChatMessageBubble(message: message)
+                        }
+                    }
+                }
+                .padding(14)
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                TextField(L10n.string("Ask about files"), text: $browser.searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        browser.performAISearch()
+                    }
+
+                Button {
+                    browser.performAISearch()
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                }
+                .disabled(browser.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || browser.isAIThinking)
+
+                if browser.isAIThinking {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .padding(12)
+        }
+    }
+}
+
+struct AIContextFileRow: View {
+    @EnvironmentObject private var browser: FileBrowserViewModel
+
+    let file: AIContextFile
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: file.url.path))
+                    .resizable()
+                    .frame(width: 18, height: 18)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.relativePath)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(file.matchSummary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Button {
+                    browser.openAIContextFile(file)
+                } label: {
+                    Image(systemName: "arrow.up.forward.app")
+                }
+                .buttonStyle(.borderless)
+                .help(L10n.string("Open"))
+            }
+
+            Text(file.snippet)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .textSelection(.enabled)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+}
+
+struct AIChatMessageBubble: View {
+    let message: AIChatMessage
+
+    var body: some View {
+        HStack(alignment: .top) {
+            if message.role == .user {
+                Spacer(minLength: 40)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n.string(message.role.titleKey))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(message.content)
+                    .textSelection(.enabled)
+                    .font(.system(size: 13))
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(message.role == .user ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor))
+            )
+            .frame(maxWidth: 680, alignment: .leading)
+
+            if message.role != .user {
+                Spacer(minLength: 40)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 }
 
@@ -2815,7 +3354,7 @@ struct FileHeaderRow: View {
             if browser.shouldShowCloudStatusColumn {
                 Text(L10n.string("Cloud"))
                     .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .leading)
+                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .center)
             }
 
             HeaderCell(title: "Modified", column: .modifiedAt)
@@ -2886,7 +3425,7 @@ struct FileRow: View {
             if browser.shouldShowCloudStatusColumn {
                 CloudStatusCell(status: browser.cloudStatus(for: item))
                     .padding(.horizontal, FileListLayout.columnHorizontalPadding)
-                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .leading)
+                    .frame(width: FileListLayout.cloudStatusColumnWidth, alignment: .center)
             }
 
             Text(item.formattedModifiedAt)
@@ -2959,13 +3498,13 @@ struct CloudStatusBadge: View {
     let status: CloudFileStatus
 
     var body: some View {
-        Text(status.badge)
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
+        Image(systemName: status.listSystemImageName)
+            .font(.system(size: 13, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
             .foregroundStyle(.white)
-            .frame(minWidth: 17, minHeight: 15)
-            .padding(.horizontal, 2)
+            .frame(width: 25, height: 19)
             .background(
-                RoundedRectangle(cornerRadius: 4)
+                RoundedRectangle(cornerRadius: 5)
                     .fill(status.listColor)
             )
             .help(L10n.string(status.titleKey))
@@ -2994,20 +3533,37 @@ private extension GitFileStatus {
 }
 
 private extension CloudFileStatus {
+    var listSystemImageName: String {
+        switch self {
+        case .synced:
+            return "checkmark.circle.fill"
+        case .cloudOnly:
+            return "icloud.fill"
+        case .syncing:
+            return "arrow.triangle.2.circlepath"
+        case .error:
+            return "exclamationmark.triangle.fill"
+        case .pinned:
+            return "pin.fill"
+        case .unknown:
+            return "questionmark.circle.fill"
+        }
+    }
+
     var listColor: Color {
         switch self {
         case .synced:
-            return .green
+            return Color(red: 0.25, green: 0.52, blue: 0.39)
         case .cloudOnly:
-            return .blue
+            return Color(red: 0.28, green: 0.47, blue: 0.64)
         case .syncing:
-            return .orange
+            return Color(red: 0.70, green: 0.48, blue: 0.24)
         case .error:
-            return .red
+            return Color(red: 0.66, green: 0.26, blue: 0.25)
         case .pinned:
-            return .teal
+            return Color(red: 0.29, green: 0.53, blue: 0.55)
         case .unknown:
-            return .gray
+            return Color(red: 0.45, green: 0.45, blue: 0.47)
         }
     }
 }
